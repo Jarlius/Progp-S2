@@ -10,17 +10,19 @@ import (
 )
 
 func main() {
-	reader := bufio.NewReader(os.Stdin)
-	text,_ := reader.ReadString('\n')
+	scanner := bufio.NewScanner(os.Stdin)
 	ch := make(chan string)
 	wg := new(sync.WaitGroup)
-	go Analyser(text,ch,wg)
-	Parser(ch,wg) 
+	go Parser(ch,wg)
+	for scanner.Scan() {
+		Analyser(scanner.Text(),ch,wg)
+	}
+	wg.Wait()
 }
 
 func Analyser(input string, tokens chan<- string, wg *sync.WaitGroup) {
 	words := strings.ToLower(input)
-	current := ""
+	current := " "
 	regex,_ := regexp.Compile(`^(` +
 		`(\s*(forw|back|left|right|down|up|color|rep|\.|"))|` +
 		`(\s+(\d+|\#[a-z\d]{6})[\s\.])` +
@@ -45,8 +47,6 @@ func Analyser(input string, tokens chan<- string, wg *sync.WaitGroup) {
 			current = ""
 		}
 	}
-	wg.Wait()
-	close(tokens)
 }
 
 func Parser(tokens <-chan string, wg *sync.WaitGroup) {
