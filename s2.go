@@ -9,20 +9,30 @@ import (
 	"fmt"
 )
 
+type Command struct {
+	name string
+	arg string
+}
+
 func main() {
 	scanner := bufio.NewScanner(os.Stdin)
-	ch := make(chan string)
+	tokens := make(chan string)
+	commands := make(chan Command)
+	output := make(chan string)
 	wg := new(sync.WaitGroup)
-	go Parser(ch,wg)
-	i := 1
-	for scanner.Scan() {
-		if !Analyser(scanner.Text(),ch,wg) {
+	
+	go Parser(tokens,commands)
+	go Executor(commands,wg,output)
+	for i := 1; scanner.Scan(); i++ {
+		if !Analyser(scanner.Text(),tokens,wg) {
 			fmt.Printf("Syntaxfel på rad %d\n", i)
 			return
 		}
-		i++
 	}
+	
 	wg.Wait()
+	close(commands)
+	fmt.Println(<-output)
 }
 
 func Analyser(input string, tokens chan<- string, wg *sync.WaitGroup) bool {
@@ -49,7 +59,7 @@ func Analyser(input string, tokens chan<- string, wg *sync.WaitGroup) bool {
 			}
 			current = ""
 		} else if comex.MatchString(current) {
-				return true
+			return true
 		}
 	}
 	if 	strings.TrimSpace(current) != "" {
@@ -58,16 +68,20 @@ func Analyser(input string, tokens chan<- string, wg *sync.WaitGroup) bool {
 	return true
 }
 
-func Parser(tokens <-chan string, wg *sync.WaitGroup) {
+func Parser(tokens <-chan string, commands chan<- Command) {
 	for token := range tokens {
 		//TODO
-		fmt.Println(token)
-		wg.Done()
+		commands <- Command{token,""}
 	}
 }
 
-/*
-func Executor() { //TODO, kanal eller färdigt träd.
-	//TODO
+func Executor(commands <-chan Command, wg *sync.WaitGroup, output chan<- string) {
+	var answer string
+	for command := range commands {
+		//TODO
+		answer += command.name
+		wg.Done()
+	}
+	output <- answer
 }
-*/
+
