@@ -21,67 +21,74 @@ type Command struct {
 
 func main() {
 	scanner := bufio.NewScanner(os.Stdin)
+	input := make(chan string)
 	tokens := make(chan interface{})
+	badsyntax := make(chan bool)
 	commands := make(chan Command)
 	output := make(chan string)
 	wg := new(sync.WaitGroup)
-	
+
+	go Analyser(input,tokens,badsyntax,wg)
 	go Parser(tokens,commands)
 	go Executor(commands,wg,output)
+	
 	for i := 1; scanner.Scan(); i++ {
-		if !Analyser(scanner.Text(),tokens,wg) { // kanske göra kanal som skickar till analyser
+		input <- scanner.Text()
+		if <-badsyntax {
 			fmt.Printf("Syntaxfel på rad %d\n", i)
 			return
 		}
 	}
-	
+
 	wg.Wait()
 	close(commands)
 	fmt.Println(<-output)
 }
 
-func Analyser(input string, tokens chan<- interface{}, wg *sync.WaitGroup) bool {
-	words := strings.ToUpper(input + " ")
-	word := " "
+func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool, wg *sync.WaitGroup) {
 	spacgex,_ := regexp.Compile(`^\s*([^\s]+[\s\.]|[\."])$`) 
 	wordgex,_ := regexp.Compile(`^(FORW|BACK|LEFT|RIGHT|DOWN|UP|COLOR|REP)$`)
 	colorex,_ := regexp.Compile(`^\#[A-Z\d]{6}$`)
 	integex,_ := regexp.Compile(`^\d+$`)
 	nullgex,_ := regexp.Compile(`^\s*\%$`)
-	for _,r := range words {
-		word += string(r)
-		if spacgex.MatchString(word) {
-			dot := ""
-			if last := string(word[len(word)-1]); last == "." || last == `"` {
-				dot = last
-				word = strings.TrimSuffix(word,last)
+	for s := range input {
+		words := strings.ToUpper(s + " ")
+		word := " "
+		for _,r := range words {
+			word += string(r)
+			if spacgex.MatchString(word) {
+				dot := ""
+				if last := string(word[len(word)-1]); last == "." || last == `"` {
+					dot = last
+					word = strings.TrimSuffix(word,last)
+				}
+				trim := strings.TrimSpace(word)
+				switch {
+				case wordgex.MatchString(trim):
+					wg.Add(1)
+					tokens <- trim
+				case colorex.MatchString(trim):
+					wg.Add(1)
+					tokens <- Color{trim}
+				case integex.MatchString(trim):
+					wg.Add(1)
+					n,_ := strconv.Atoi(trim)
+					tokens <- n
+				case trim == "":
+				default:
+					bad <- true
+				}
+				if dot != "" {
+					wg.Add(1)
+					tokens <- dot
+				}
+				word = ""
+			} else if nullgex.MatchString(word) {
+				break
 			}
-			trim := strings.TrimSpace(word)
-			switch {
-			case wordgex.MatchString(trim):
-				wg.Add(1)
-				tokens <- trim
-			case colorex.MatchString(trim):
-				wg.Add(1)
-				tokens <- Color{trim}
-			case integex.MatchString(trim):
-				wg.Add(1)
-				n,_ := strconv.Atoi(trim)
-				tokens <- n
-			case trim == "":
-			default:
-				return false
-			}
-			if dot != "" {
-				wg.Add(1)
-				tokens <- dot
-			}
-			word = ""
-		} else if nullgex.MatchString(word) {
-			return true
 		}
+		bad <- false
 	}
-	return true
 }
 
 func Parser(tokens <-chan interface{}, commands chan<- Command) {
