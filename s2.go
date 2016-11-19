@@ -34,9 +34,8 @@ type Int struct {
 	val string
 }
 
-type Dot struct {
-	val string
-}
+type Dot struct {}
+type Cit struct {}
 
 type Command struct {
 	name string
@@ -104,9 +103,11 @@ func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool) {
 				default:
 					bad <- true
 				}
-				if dot != "" {
-					tokens <- Dot{dot}
-				}
+				if dot == "." {
+					tokens <- Dot{}
+				} else if dot == `"` {
+					tokens <- Cit{}
+				}	
 				word = ""
 			} else if nullgex.MatchString(word) {
 				break
@@ -119,7 +120,10 @@ func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool) {
 func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGroup) {
 	var next Command
 	var prev interface{}
+//	var repeat bool
 	for token := range tokens {
+		ins_cmd := false
+		dotting := false
 		switch prev := prev.(type) {
 		case Word:
 			switch prev.word.(type) {
@@ -132,31 +136,26 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGro
 					next.arg = arg.val
 				}
 			case DotWord:
-				if _,b := token.(Dot); b {
-					wg.Add(1)
-					commands <- next
-					next = Command{}
-				}
+				dotting = true
 			}
 		case Int:
-			if _,b := token.(Dot); b {
-				wg.Add(1)
-				commands <- next
-				next = Command{}
-			}
+			dotting = true
 		case Color:
+			dotting = true
+		case Dot:
+			ins_cmd = true
+		default:
+			ins_cmd = true
+		}
+		if ins_cmd {
+			if cmd,b := token.(Word); b {
+				next.name = reflect.ValueOf(cmd.word).Field(0).String()
+			}		
+		} else if dotting {
 			if _,b := token.(Dot); b {
 				wg.Add(1)
 				commands <- next
 				next = Command{}
-			}
-		case Dot:
-			if cmd,b := token.(Word); b {
-				next.name = reflect.ValueOf(cmd.word).Field(0).String()
-			}
-		default:
-			if cmd,b := token.(Word); b {
-				next.name = reflect.ValueOf(cmd.word).Field(0).String()
 			}
 		}
 		prev = token
