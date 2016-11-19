@@ -40,6 +40,7 @@ type Cit struct {}
 type Command struct {
 	name string
 	arg string
+	list []Command
 }
 
 func main() {
@@ -117,14 +118,15 @@ func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool) {
 	}
 }
 
+//vad sägs om att multiplicera arrayer??
 func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGroup) {
 	var cit_count int
 	var next Command
 	var prev interface{}
-	var repeat bool
 	for token := range tokens {
 		ins_cmd := false
 		dotting := false
+		looping := false
 		switch prev := prev.(type) {
 		case Word:
 			switch prev.word.(type) {
@@ -140,9 +142,10 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGro
 				dotting = true
 			}
 		case Int:
-			if repeat { // INT -> CMD|CIT
+			if next.name == "REP" && cit_count == 0 { // INT -> CMD|CIT
 				if _,b := token.(Cit); b {
-					//TODO
+					cit_count++
+//					next.list = append(next.list,
 				} else {
 					ins_cmd = true
 				}
@@ -153,37 +156,42 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGro
 			dotting = true
 		case Dot:
 			if _,b := token.(Cit); b && (cit_count != 0) { // DOT -> CIT
-				//TODO
+				cit_count--
+				if cit_count == 0 {
+					looping = true
+				}
 			} else { // DOT -> CMD
 				ins_cmd = true
 			}
 		case Cit:
-			if repeat { // CIT -> CMD
+			if _,b := token.(Cit); b && (cit_count != 0) { // CIT -> CIT
+				cit_count--
+				if cit_count == 0 {
+					looping = true
+				}
+			} else { // CIT -> CMD
 				ins_cmd = true
-			} else { // CIT -> CIT
-				//TODO
 			}
 		default:
 			ins_cmd = true
 		}
 		if ins_cmd {
 			if cmd,b := token.(Word); b {
-				cmd := reflect.ValueOf(cmd.word).Field(0).String()
-				if cmd == "REP" {
-					repeat = true
-				} else {
-					repeat = false
-				}
-				next.name = cmd
-			}		
+				next.name = reflect.ValueOf(cmd.word).Field(0).String()
+			}
 		} else if dotting {
 			if _,b := token.(Dot); b {
 				if cit_count == 0 {
 					wg.Add(1)
 					commands <- next
+					next = Command{}
+				} else {
+					next.list = append(next.list,Command{next.name,next.arg,[]Command{}})
 				}
-				next = Command{}
 			}
+		} else if looping {
+			// TODO
+			fmt.Println(next.list)
 		}
 		prev = token
 	}
