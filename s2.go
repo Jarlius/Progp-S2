@@ -118,83 +118,90 @@ func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool) {
 	}
 }
 
-//vad sägs om att multiplicera arrayer??
 func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGroup) {
 	var cit_count int
 	var next Command
 	var prev interface{}
 	for token := range tokens {
-		ins_cmd := false
-		dotting := false
-		looping := false
 		switch prev := prev.(type) {
 		case Word:
 			switch prev.word.(type) {
-			case IntWord: // FORW|BACK|LEFT|RIGHT|REP -> INT
+	// FORW|BACK|LEFT|RIGHT|REP -> INT
+			case IntWord:
 				if arg,b := token.(Int); b {
 					next.arg = arg.val
 				}
-			case ColWord: // COLOR -> COL
+	// COLOR -> COL
+			case ColWord: 
 				if arg,b := token.(Color); b {
 					next.arg = arg.val
 				}
-			case DotWord: // DOWN|UP -> DOT
-				dotting = true
+	// DOWN|UP -> DOT
+			case DotWord: 
+				next = dotting(next,token,commands,wg,cit_count)
 			}
 		case Int:
-			if next.name == "REP" && cit_count == 0 { // INT -> CMD|CIT
+	// INT -> CIT|CMD
+			if next.name == "REP" && cit_count == 0 { 
+				// TODO: nytt rep = flytta målet för replista till next.list
 				if _,b := token.(Cit); b {
 					cit_count++
-//					next.list = append(next.list,
 				} else {
-					ins_cmd = true
+					next = ins_cmd(next,token)
 				}
-			} else { // INT -> DOT
-				dotting = true
+	// INT -> DOT
+			} else { 
+				next = dotting(next,token,commands,wg,cit_count)
 			}
-		case Color: // COL -> DOT
-			dotting = true
+	// COL -> DOT
+		case Color: 
+			next = dotting(next,token,commands,wg,cit_count)
 		case Dot:
-			if _,b := token.(Cit); b && (cit_count != 0) { // DOT -> CIT
+	// DOT -> CIT
+			if _,b := token.(Cit); b && (cit_count != 0) { 
 				cit_count--
-				if cit_count == 0 {
-					looping = true
-				}
-			} else { // DOT -> CMD
-				ins_cmd = true
+				// TODO: multiplicera djupaste listan
+				// TODO: sätt nytt mål ett steg högre
+	// DOT -> CMD
+			} else { 
+				next = ins_cmd(next,token)
 			}
 		case Cit:
-			if _,b := token.(Cit); b && (cit_count != 0) { // CIT -> CIT
+	// CIT -> CIT
+			if _,b := token.(Cit); b && (cit_count != 0) { 
 				cit_count--
-				if cit_count == 0 {
-					looping = true
-				}
-			} else { // CIT -> CMD
-				ins_cmd = true
+				// TODO: multiplicera djupaste listan
+				// TODO: sätt nytt mål ett steg högre
+	// CIT -> CMD
+			} else { 
+				next = ins_cmd(next,token)
 			}
 		default:
-			ins_cmd = true
-		}
-		if ins_cmd {
-			if cmd,b := token.(Word); b {
-				next.name = reflect.ValueOf(cmd.word).Field(0).String()
-			}
-		} else if dotting {
-			if _,b := token.(Dot); b {
-				if cit_count == 0 {
-					wg.Add(1)
-					commands <- next
-					next = Command{}
-				} else {
-					next.list = append(next.list,Command{next.name,next.arg,[]Command{}})
-				}
-			}
-		} else if looping {
-			// TODO
-			fmt.Println(next.list)
+			next = ins_cmd(next,token)
 		}
 		prev = token
 	}
+}
+
+func ins_cmd(target Command, token interface{}) Command {
+	if cmd,b := token.(Word); b {
+		target.name = reflect.ValueOf(cmd.word).Field(0).String()
+	}
+	return target
+}
+
+func dotting(target Command, token interface{}, cmds chan<- Command, wg *sync.WaitGroup, cits int) Command {
+	if _,b := token.(Dot); b {
+		if cits == 0 {
+			// TODO: om next.name är REP så skicka dess lista r gånger till cmds
+			wg.Add(1)
+			cmds <- target
+			target = Command{}
+		} else {
+			target.list = append(target.list,Command{target.name,target.arg,[]Command{}})
+		}
+	}
+	return target
 }
 
 func Executor(commands <-chan Command, wg *sync.WaitGroup, output chan<- string) {
