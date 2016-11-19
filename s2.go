@@ -5,12 +5,36 @@ import (
 	"os"
 	"sync"
 	"strings"
-	"strconv"
 	"regexp"
+	"reflect"
 	"fmt"
 )
 
+type Word struct {
+	word interface{}	
+}
+
+type IntWord struct {
+	val string
+}
+
+type ColWord struct {
+	val string
+}
+
+type DotWord struct {
+	val string
+}
+
 type Color struct {
+	val string
+}
+
+type Int struct {
+	val string
+}
+
+type Dot struct {
 	val string
 }
 
@@ -28,8 +52,8 @@ func main() {
 	output := make(chan string)
 	wg := new(sync.WaitGroup)
 
-	go Analyser(input,tokens,badsyntax,wg)
-	go Parser(tokens,commands)
+	go Analyser(input,tokens,badsyntax)
+	go Parser(tokens,commands,wg)
 	go Executor(commands,wg,output)
 	
 	for i := 1; scanner.Scan(); i++ {
@@ -45,9 +69,11 @@ func main() {
 	fmt.Println(<-output)
 }
 
-func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool, wg *sync.WaitGroup) {
+func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool) {
 	spacgex,_ := regexp.Compile(`^\s*([^\s]+[\s\.]|[\."])$`) 
-	wordgex,_ := regexp.Compile(`^(FORW|BACK|LEFT|RIGHT|DOWN|UP|COLOR|REP)$`)
+	iwordex,_ := regexp.Compile(`^(FORW|BACK|LEFT|RIGHT|REP)$`)
+	cwordex,_ := regexp.Compile(`^COLOR$`)
+	dwordex,_ := regexp.Compile(`^(DOWN|UP)$`)
 	colorex,_ := regexp.Compile(`^\#[A-Z\d]{6}$`)
 	integex,_ := regexp.Compile(`^\d+$`)
 	nullgex,_ := regexp.Compile(`^\s*\%$`)
@@ -64,23 +90,22 @@ func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool, w
 				}
 				trim := strings.TrimSpace(word)
 				switch {
-				case wordgex.MatchString(trim):
-					wg.Add(1)
-					tokens <- trim
-				case colorex.MatchString(trim):
-					wg.Add(1)
-					tokens <- Color{trim}
+				case iwordex.MatchString(trim):
+					tokens <- Word{IntWord{trim}}
+				case cwordex.MatchString(trim):
+					tokens <- Word{ColWord{trim}}
+				case dwordex.MatchString(trim):
+					tokens <- Word{DotWord{trim}}
 				case integex.MatchString(trim):
-					wg.Add(1)
-					n,_ := strconv.Atoi(trim)
-					tokens <- n
+					tokens <- Int{trim}
+				case colorex.MatchString(trim):
+					tokens <- Color{trim}
 				case trim == "":
 				default:
 					bad <- true
 				}
 				if dot != "" {
-					wg.Add(1)
-					tokens <- dot
+					tokens <- Dot{dot}
 				}
 				word = ""
 			} else if nullgex.MatchString(word) {
@@ -91,25 +116,57 @@ func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool, w
 	}
 }
 
-func Parser(tokens <-chan interface{}, commands chan<- Command) {
+func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGroup) {
+	var next Command
+	var prev interface{}
 	for token := range tokens {
-		//TODO
-		switch token := token.(type) {
-		case string:
-			commands <- Command{token,""}
-		case int:
-			commands <- Command{"int",""}
+		switch prev := prev.(type) {
+		case Word:
+			switch prev.word.(type) {
+			case IntWord:
+				if arg,b := token.(Int); b {
+					next.arg = arg.val
+				}
+			case ColWord:
+				if arg,b := token.(Color); b {
+					next.arg = arg.val
+				}
+			case DotWord:
+				if _,b := token.(Dot); b {
+					wg.Add(1)
+					commands <- next
+					next = Command{}
+				}
+			}
+		case Int:
+			if _,b := token.(Dot); b {
+				wg.Add(1)
+				commands <- next
+				next = Command{}
+			}
 		case Color:
-			commands <- Command{"color",""}
+			if _,b := token.(Dot); b {
+				wg.Add(1)
+				commands <- next
+				next = Command{}
+			}
+		case Dot:
+			if cmd,b := token.(Word); b {
+				next.name = reflect.ValueOf(cmd.word).Field(0).String()
+			}
+		default:
+			if cmd,b := token.(Word); b {
+				next.name = reflect.ValueOf(cmd.word).Field(0).String()
+			}
 		}
+		prev = token
 	}
 }
 
 func Executor(commands <-chan Command, wg *sync.WaitGroup, output chan<- string) {
 	var answer string
 	for command := range commands {
-		//TODO
-		answer += command.name + " "
+		answer += command.name + " " + command.arg
 		wg.Done()
 	}
 	output <- answer
