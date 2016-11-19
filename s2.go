@@ -118,43 +118,70 @@ func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool) {
 }
 
 func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGroup) {
+	var cit_count int
 	var next Command
 	var prev interface{}
-//	var repeat bool
+	var repeat bool
 	for token := range tokens {
 		ins_cmd := false
 		dotting := false
 		switch prev := prev.(type) {
 		case Word:
 			switch prev.word.(type) {
-			case IntWord:
+			case IntWord: // FORW|BACK|LEFT|RIGHT|REP -> INT
 				if arg,b := token.(Int); b {
 					next.arg = arg.val
 				}
-			case ColWord:
+			case ColWord: // COLOR -> COL
 				if arg,b := token.(Color); b {
 					next.arg = arg.val
 				}
-			case DotWord:
+			case DotWord: // DOWN|UP -> DOT
 				dotting = true
 			}
 		case Int:
-			dotting = true
-		case Color:
+			if repeat { // INT -> CMD|CIT
+				if _,b := token.(Cit); b {
+					//TODO
+				} else {
+					ins_cmd = true
+				}
+			} else { // INT -> DOT
+				dotting = true
+			}
+		case Color: // COL -> DOT
 			dotting = true
 		case Dot:
-			ins_cmd = true
+			if _,b := token.(Cit); b && (cit_count != 0) { // DOT -> CIT
+				//TODO
+			} else { // DOT -> CMD
+				ins_cmd = true
+			}
+		case Cit:
+			if repeat { // CIT -> CMD
+				ins_cmd = true
+			} else { // CIT -> CIT
+				//TODO
+			}
 		default:
 			ins_cmd = true
 		}
 		if ins_cmd {
 			if cmd,b := token.(Word); b {
-				next.name = reflect.ValueOf(cmd.word).Field(0).String()
+				cmd := reflect.ValueOf(cmd.word).Field(0).String()
+				if cmd == "REP" {
+					repeat = true
+				} else {
+					repeat = false
+				}
+				next.name = cmd
 			}		
 		} else if dotting {
 			if _,b := token.(Dot); b {
-				wg.Add(1)
-				commands <- next
+				if cit_count == 0 {
+					wg.Add(1)
+					commands <- next
+				}
 				next = Command{}
 			}
 		}
@@ -165,7 +192,7 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGro
 func Executor(commands <-chan Command, wg *sync.WaitGroup, output chan<- string) {
 	var answer string
 	for command := range commands {
-		answer += command.name + " " + command.arg
+		answer += "{" + command.name + " " + command.arg + "} "
 		wg.Done()
 	}
 	output <- answer
