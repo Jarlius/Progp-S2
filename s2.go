@@ -13,15 +13,15 @@ import (
 )
 
 type Word struct {word interface{}}
-type IntWord struct {val string}
-type ColWord struct {val string}
-type DotWord struct {val string}
+type IntWord struct {val string;row int}
+type ColWord struct {val string;row int}
+type DotWord struct {val string;row int}
 
-type Color struct {val string}
-type Int struct {val string}
+type Color struct {val string;row int}
+type Int struct {val string;row int}
 
-type Dot struct {}
-type Cit struct {}
+type Dot struct {row int}
+type Cit struct {row int}
 
 type Command struct {
 	name string
@@ -39,9 +39,10 @@ func main() {
 	wait_toks := new(sync.WaitGroup)
 	wait_exec := new(sync.WaitGroup)
 	success := make(chan bool)
+	error_row := make(chan int)
 	
-	go Analyser(input,tokens,wait_rows,wait_toks,success)
-	go Parser(tokens,commands,wait_toks,wait_exec,success)
+	go Analyser(input,tokens,wait_rows,wait_toks,success,error_row)
+	go Parser(tokens,commands,wait_toks,wait_exec,success,error_row)
 	go Executor(commands,wait_exec,output)
 	
 	wait_rows.Add(1)
@@ -64,11 +65,12 @@ func main() {
 		close(commands)
 		fmt.Println(<-output)
 	} else {
-		fmt.Println("Syntaxfel på rad X")
+		row := <- error_row
+		fmt.Printf("Syntaxfel på rad %d\n", row)
 	}
 }
 
-func Analyser(input <-chan string, tokens chan<- interface{}, wait_rows *sync.WaitGroup, wait_toks *sync.WaitGroup, success chan<- bool) {
+func Analyser(input <-chan string, tokens chan<- interface{}, wait_rows *sync.WaitGroup, wait_toks *sync.WaitGroup, success chan<- bool, erow chan<- int) {
 	spacgex,_ := regexp.Compile(`^\s*([^\s]+[\s\.\%]|[\."])$`) 
 	iwordex,_ := regexp.Compile(`^(FORW|BACK|LEFT|RIGHT|REP)$`)
 	cwordex,_ := regexp.Compile(`^COLOR$`)
@@ -77,6 +79,7 @@ func Analyser(input <-chan string, tokens chan<- interface{}, wait_rows *sync.Wa
 	integex,_ := regexp.Compile(`^\d+$`)
 	nullgex,_ := regexp.Compile(`^\s*\%$`)
 	for s := range input {
+		row := 1
 		words := strings.ToUpper(s + " ")
 		word := " "
 		for _,r := range words {
@@ -92,29 +95,30 @@ func Analyser(input <-chan string, tokens chan<- interface{}, wait_rows *sync.Wa
 				switch {
 				case iwordex.MatchString(trim):
 					wait_toks.Add(1)
-					tokens <- Word{IntWord{trim}}
+					tokens <- Word{IntWord{trim,row}}
 				case cwordex.MatchString(trim):
 					wait_toks.Add(1)
-					tokens <- Word{ColWord{trim}}
+					tokens <- Word{ColWord{trim,row}}
 				case dwordex.MatchString(trim):
 					wait_toks.Add(1)
-					tokens <- Word{DotWord{trim}}
+					tokens <- Word{DotWord{trim,row}}
 				case integex.MatchString(trim):
 					wait_toks.Add(1)
-					tokens <- Int{trim}
+					tokens <- Int{trim,row}
 				case colorex.MatchString(trim):
 					wait_toks.Add(1)
-					tokens <- Color{trim}
+					tokens <- Color{trim,row}
 				case trim == "":
 				default:
 					success <- false
+					erow <- row
 				}
 				if dot == "." {
 					wait_toks.Add(1)
-					tokens <- Dot{}
+					tokens <- Dot{row}
 				} else if dot == `"` {
 					wait_toks.Add(1)
-					tokens <- Cit{}
+					tokens <- Cit{row}
 				} else if dot == "%" {
 					comment = true
 				}
@@ -126,11 +130,12 @@ func Analyser(input <-chan string, tokens chan<- interface{}, wait_rows *sync.Wa
 				break
 			}
 		}
+		row++
 		wait_rows.Done()
 	}
 }
 
-func Parser(tokens <-chan interface{}, commands chan<- Command, wait_toks *sync.WaitGroup, wait_exec *sync.WaitGroup, success chan<- bool) {
+func Parser(tokens <-chan interface{}, commands chan<- Command, wait_toks *sync.WaitGroup, wait_exec *sync.WaitGroup, success chan<- bool, erow chan<- int) {
 	var cit_count int
 	var next Command
 	var cur *Command = &next
@@ -144,8 +149,8 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wait_toks *sync.
 				if arg,b := token.(Int); b {
 					next.arg = arg.val
 				} else {
-					// TODO: här kan det bli syntaxfel
 					success <- false
+					erow <- get_row(token)
 				}
 	// COLOR -> COL
 			case ColWord:
@@ -154,10 +159,11 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wait_toks *sync.
 				} else {
 					// TODO: här kan det bli syntaxfel
 					success <- false
+					erow <- get_row(token)
 				}
 	// DOWN|UP -> DOT
 			case DotWord: 
-				next = dotting(next,cur,token,commands,wait_exec,cit_count,success)
+				next = dotting(next,cur,token,commands,wait_exec,cit_count,success,erow)
 			}
 		case Int:
 	// INT -> CIT|CMD
@@ -169,15 +175,15 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wait_toks *sync.
 				if _,b := token.(Cit); b {
 					cit_count++
 				} else {
-					next = ins_cmd(next,token,success)
+					next = ins_cmd(next,token,success,erow)
 				}
 	// INT -> DOT
 			} else { 
-				next = dotting(next,cur,token,commands,wait_exec,cit_count,success)
+				next = dotting(next,cur,token,commands,wait_exec,cit_count,success,erow)
 			}
 	// COL -> DOT
 		case Color: 
-			next = dotting(next,cur,token,commands,wait_exec,cit_count,success)
+			next = dotting(next,cur,token,commands,wait_exec,cit_count,success,erow)
 		case Dot:
 	// DOT -> CIT
 			if _,b := token.(Cit); b && (cit_count != 0) { 
@@ -190,7 +196,7 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wait_toks *sync.
 				}
 	// DOT -> CMD
 			} else { 
-				next = ins_cmd(next,token,success)
+				next = ins_cmd(next,token,success,erow)
 			}
 		case Cit:
 	// CIT -> CIT
@@ -204,27 +210,32 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wait_toks *sync.
 				}
 	// CIT -> CMD
 			} else { 
-				next = ins_cmd(next,token,success)
+				next = ins_cmd(next,token,success,erow)
 			}
 		default:
-			next = ins_cmd(next,token,success)
+			next = ins_cmd(next,token,success,erow)
 		}
 		prev = token
 		wait_toks.Done()
 	}
 }
 
-func ins_cmd(target Command, token interface{}, success chan<- bool) Command {
+func get_row(token interface{}) int {
+	return int(reflect.ValueOf(token).FieldByName("row").Int())
+}
+
+func ins_cmd(target Command, token interface{}, success chan<- bool, erow chan<- int) Command {
 	if cmd,b := token.(Word); b {
 		target.name = reflect.ValueOf(cmd.word).Field(0).String()
 	} else {
 		// TODO: här kan det bli syntaxfel
 		success <- false
+		erow <- get_row(token)
 	}
 	return target
 }
 
-func dotting(source Command, target *Command, token interface{}, cmds chan<- Command, wg *sync.WaitGroup, cits int, success chan<- bool) Command {
+func dotting(source Command, target *Command, token interface{}, cmds chan<- Command, wg *sync.WaitGroup, cits int, success chan<- bool, erow chan<- int) Command {
 	if _,b := token.(Dot); b {
 		if cits == 0 {
 			// om replistan inte är tom, skicka den till repeat
@@ -242,6 +253,7 @@ func dotting(source Command, target *Command, token interface{}, cmds chan<- Com
 		}
 	} else {
 		success <- false
+		erow <- get_row(token)
 		// TODO: här kan det bli syntaxfel
 	}
 	return source
