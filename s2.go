@@ -11,29 +11,13 @@ import (
 	"fmt"
 )
 
-type Word struct {
-	word interface{}	
-}
+type Word struct {word interface{}}
+type IntWord struct {val string}
+type ColWord struct {val string}
+type DotWord struct {val string}
 
-type IntWord struct {
-	val string
-}
-
-type ColWord struct {
-	val string
-}
-
-type DotWord struct {
-	val string
-}
-
-type Color struct {
-	val string
-}
-
-type Int struct {
-	val string
-}
+type Color struct {val string}
+type Int struct {val string}
 
 type Dot struct {}
 type Cit struct {}
@@ -76,7 +60,7 @@ func main() {
 }
 
 func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool, wait_rows *sync.WaitGroup, wait_toks *sync.WaitGroup) {
-	spacgex,_ := regexp.Compile(`^\s*([^\s]+[\s\.]|[\."])$`) 
+	spacgex,_ := regexp.Compile(`^\s*([^\s]+[\s\.\%]|[\."])$`) 
 	iwordex,_ := regexp.Compile(`^(FORW|BACK|LEFT|RIGHT|REP)$`)
 	cwordex,_ := regexp.Compile(`^COLOR$`)
 	dwordex,_ := regexp.Compile(`^(DOWN|UP)$`)
@@ -84,14 +68,14 @@ func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool, w
 	integex,_ := regexp.Compile(`^\d+$`)
 	nullgex,_ := regexp.Compile(`^\s*\%$`)
 	for s := range input {
-		
 		words := strings.ToUpper(s + " ")
 		word := " "
 		for _,r := range words {
 			word += string(r)
+			comment := false
 			if spacgex.MatchString(word) {
 				dot := ""
-				if last := string(word[len(word)-1]); last == "." || last == `"` {
+				if last := string(r); last == "." || last == `"` || last == "%" {
 					dot = last
 					word = strings.TrimSuffix(word,last)
 				}
@@ -122,9 +106,14 @@ func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool, w
 				} else if dot == `"` {
 					wait_toks.Add(1)
 					tokens <- Cit{}
-				}	
+				} else if dot == "%" {
+					comment = true
+				}
 				word = ""
 			} else if nullgex.MatchString(word) {
+				break
+			}
+			if comment {
 				break
 			}
 		}
