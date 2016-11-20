@@ -33,42 +33,42 @@ func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 	input := make(chan string)
 	tokens := make(chan interface{})
-	badsyntax := make(chan bool)
-	badorder := make(chan bool)
 	commands := make(chan Command)
 	output := make(chan string)
 	wait_rows := new(sync.WaitGroup)
 	wait_toks := new(sync.WaitGroup)
 	wait_exec := new(sync.WaitGroup)
-	done := make(chan bool)
+	success := make(chan bool)
 	
-	go Analyser(input,tokens,badsyntax,wait_rows,wait_toks)
-	go Parser(tokens,commands,badorder,wait_toks,wait_exec)
+	go Analyser(input,tokens,wait_rows,wait_toks,success)
+	go Parser(tokens,commands,wait_toks,wait_exec,success)
 	go Executor(commands,wait_exec,output)
 	
-	for i := 1; scanner.Scan(); i++ {
-		input <- scanner.Text()
-		wait_rows.Add(1)
-		if <-badsyntax {
-			fmt.Printf("Syntaxfel på rad %d\n", i)
-			return
+	wait_rows.Add(1)
+	go func() {
+		for scanner.Scan() {
+			wait_rows.Add(1)
+			input <- scanner.Text()
 		}
-	}
+		wait_rows.Done()
+	}()
 
 	go func() {
 		wait_rows.Wait()
 		wait_toks.Wait()
 		wait_exec.Wait()
-		done <- true
+		success <- true
 	}()
-		
-	if <-done {
+
+	if <-success {
 		close(commands)
 		fmt.Println(<-output)
+	} else {
+		fmt.Println("Syntaxfel på rad X")
 	}
 }
 
-func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool, wait_rows *sync.WaitGroup, wait_toks *sync.WaitGroup) {
+func Analyser(input <-chan string, tokens chan<- interface{}, wait_rows *sync.WaitGroup, wait_toks *sync.WaitGroup, success chan<- bool) {
 	spacgex,_ := regexp.Compile(`^\s*([^\s]+[\s\.\%]|[\."])$`) 
 	iwordex,_ := regexp.Compile(`^(FORW|BACK|LEFT|RIGHT|REP)$`)
 	cwordex,_ := regexp.Compile(`^COLOR$`)
@@ -107,7 +107,7 @@ func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool, w
 					tokens <- Color{trim}
 				case trim == "":
 				default:
-					bad <- true
+					success <- false
 				}
 				if dot == "." {
 					wait_toks.Add(1)
@@ -126,12 +126,11 @@ func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool, w
 				break
 			}
 		}
-		bad <- false
 		wait_rows.Done()
 	}
 }
 
-func Parser(tokens <-chan interface{}, commands chan<- Command, bad chan<- bool, wait_toks *sync.WaitGroup, wait_exec *sync.WaitGroup) {
+func Parser(tokens <-chan interface{}, commands chan<- Command, wait_toks *sync.WaitGroup, wait_exec *sync.WaitGroup, success chan<- bool) {
 	var cit_count int
 	var next Command
 	var cur *Command = &next
@@ -146,15 +145,17 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, bad chan<- bool,
 					next.arg = arg.val
 				}
 				// TODO: här kan det bli syntaxfel
+				success <- false
 	// COLOR -> COL
 			case ColWord:
 				if arg,b := token.(Color); b {
 					next.arg = arg.val
 				}
 				// TODO: här kan det bli syntaxfel
+				success <- false
 	// DOWN|UP -> DOT
 			case DotWord: 
-				next = dotting(next,cur,token,commands,wait_exec,cit_count)
+				next = dotting(next,cur,token,commands,wait_exec,cit_count,success)
 			}
 		case Int:
 	// INT -> CIT|CMD
@@ -166,15 +167,15 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, bad chan<- bool,
 				if _,b := token.(Cit); b {
 					cit_count++
 				} else {
-					next = ins_cmd(next,token)
+					next = ins_cmd(next,token,success)
 				}
 	// INT -> DOT
 			} else { 
-				next = dotting(next,cur,token,commands,wait_exec,cit_count)
+				next = dotting(next,cur,token,commands,wait_exec,cit_count,success)
 			}
 	// COL -> DOT
 		case Color: 
-			next = dotting(next,cur,token,commands,wait_exec,cit_count)
+			next = dotting(next,cur,token,commands,wait_exec,cit_count,success)
 		case Dot:
 	// DOT -> CIT
 			if _,b := token.(Cit); b && (cit_count != 0) { 
@@ -187,7 +188,7 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, bad chan<- bool,
 				}
 	// DOT -> CMD
 			} else { 
-				next = ins_cmd(next,token)
+				next = ins_cmd(next,token,success)
 			}
 		case Cit:
 	// CIT -> CIT
@@ -201,25 +202,26 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, bad chan<- bool,
 				}
 	// CIT -> CMD
 			} else { 
-				next = ins_cmd(next,token)
+				next = ins_cmd(next,token,success)
 			}
 		default:
-			next = ins_cmd(next,token)
+			next = ins_cmd(next,token,success)
 		}
 		prev = token
 		wait_toks.Done()
 	}
 }
 
-func ins_cmd(target Command, token interface{}) Command {
+func ins_cmd(target Command, token interface{}, success chan<- bool) Command {
 	if cmd,b := token.(Word); b {
 		target.name = reflect.ValueOf(cmd.word).Field(0).String()
 	}
 	// TODO: här kan det bli syntaxfel
+	success <- false
 	return target
 }
 
-func dotting(source Command, target *Command, token interface{}, cmds chan<- Command, wg *sync.WaitGroup, cits int) Command {
+func dotting(source Command, target *Command, token interface{}, cmds chan<- Command, wg *sync.WaitGroup, cits int, success chan<- bool) Command {
 	if _,b := token.(Dot); b {
 		if cits == 0 {
 			// om replistan inte är tom, skicka den till repeat
@@ -236,6 +238,7 @@ func dotting(source Command, target *Command, token interface{}, cmds chan<- Com
 			(*target).list = append((*target).list,Command{source.name,source.arg,[]Command{}})
 		}
 	}
+	success <- false
 	// TODO: här kan det bli syntaxfel
 	return source
 }
