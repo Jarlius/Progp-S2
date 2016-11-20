@@ -5,6 +5,7 @@ import (
 	"os"
 	"sync"
 	"strings"
+	"strconv"
 	"regexp"
 	"reflect"
 	"fmt"
@@ -167,7 +168,7 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGro
 				// sätt nytt mål ett steg högre
 				cur = backtrack(&next,cur)
 				if cit_count == 0 {
-					repeat(next.list)
+					repeat(next.list,commands,wg)
 					next = Command{}
 				}
 	// DOT -> CMD
@@ -181,7 +182,7 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGro
 				// sätt nytt mål ett steg högre
 				cur = backtrack(&next,cur)
 				if cit_count == 0 {
-					repeat(next.list)
+					repeat(next.list,commands,wg)
 					next = Command{}
 				}
 	// CIT -> CMD
@@ -208,7 +209,7 @@ func dotting(source Command, target *Command, token interface{}, cmds chan<- Com
 			// om replistan inte är tom, skicka den till repeat
 			if len(source.list) != 0 {
 				(*target).list = append((*target).list,Command{source.name,source.arg,[]Command{}})
-				repeat(source.list)
+				repeat(source.list,cmds,wg)
 			} else {
 				wg.Add(1)
 				cmds <- source
@@ -233,8 +234,18 @@ func backtrack(first *Command,current *Command) *Command {
 	return backtrack(edge,current)
 }
 
-func repeat(list []Command) {
-	fmt.Println(list)
+func repeat(list []Command,cmds chan<- Command, wg *sync.WaitGroup) {
+	for _,cmd := range list {
+		if cmd.name == "REP" {
+			reps,_ := strconv.Atoi(cmd.arg)
+			for i := 0; i < reps; i++ {
+				repeat(cmd.list,cmds,wg)
+			}
+		} else {
+			wg.Add(1)
+			cmds <- cmd
+		}
+	}
 }
 
 func Executor(commands <-chan Command, wg *sync.WaitGroup, output chan<- string) {
