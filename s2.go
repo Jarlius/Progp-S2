@@ -51,26 +51,31 @@ func main() {
 	badsyntax := make(chan bool)
 	commands := make(chan Command)
 	output := make(chan string)
-	wg := new(sync.WaitGroup)
+	wait_rows := new(sync.WaitGroup)
+	wait_toks := new(sync.WaitGroup)
+	wait_exec := new(sync.WaitGroup)
 
-	go Analyser(input,tokens,badsyntax)
-	go Parser(tokens,commands,wg)
-	go Executor(commands,wg,output)
+	go Analyser(input,tokens,badsyntax,wait_rows,wait_toks)
+	go Parser(tokens,commands,wait_toks,wait_exec)
+	go Executor(commands,wait_exec,output)
 	
 	for i := 1; scanner.Scan(); i++ {
 		input <- scanner.Text()
+		wait_rows.Add(1)
 		if <-badsyntax {
 			fmt.Printf("Syntaxfel på rad %d\n", i)
 			return
 		}
 	}
 
-	wg.Wait()
+	wait_rows.Wait()
+	wait_toks.Wait()
+	wait_exec.Wait()
 	close(commands)
 	fmt.Println(<-output)
 }
 
-func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool) {
+func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool, wait_rows *sync.WaitGroup, wait_toks *sync.WaitGroup) {
 	spacgex,_ := regexp.Compile(`^\s*([^\s]+[\s\.]|[\."])$`) 
 	iwordex,_ := regexp.Compile(`^(FORW|BACK|LEFT|RIGHT|REP)$`)
 	cwordex,_ := regexp.Compile(`^COLOR$`)
@@ -79,6 +84,7 @@ func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool) {
 	integex,_ := regexp.Compile(`^\d+$`)
 	nullgex,_ := regexp.Compile(`^\s*\%$`)
 	for s := range input {
+		
 		words := strings.ToUpper(s + " ")
 		word := " "
 		for _,r := range words {
@@ -92,22 +98,29 @@ func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool) {
 				trim := strings.TrimSpace(word)
 				switch {
 				case iwordex.MatchString(trim):
+					wait_toks.Add(1)
 					tokens <- Word{IntWord{trim}}
 				case cwordex.MatchString(trim):
+					wait_toks.Add(1)
 					tokens <- Word{ColWord{trim}}
 				case dwordex.MatchString(trim):
+					wait_toks.Add(1)
 					tokens <- Word{DotWord{trim}}
 				case integex.MatchString(trim):
+					wait_toks.Add(1)
 					tokens <- Int{trim}
 				case colorex.MatchString(trim):
+					wait_toks.Add(1)
 					tokens <- Color{trim}
 				case trim == "":
 				default:
 					bad <- true
 				}
 				if dot == "." {
+					wait_toks.Add(1)
 					tokens <- Dot{}
 				} else if dot == `"` {
+					wait_toks.Add(1)
 					tokens <- Cit{}
 				}	
 				word = ""
@@ -116,10 +129,11 @@ func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool) {
 			}
 		}
 		bad <- false
+		wait_rows.Done()
 	}
 }
 
-func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGroup) {
+func Parser(tokens <-chan interface{}, commands chan<- Command, wait_toks *sync.WaitGroup, wait_exec *sync.WaitGroup) {
 	var cit_count int
 	var next Command
 	var cur *Command = &next
@@ -140,7 +154,7 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGro
 				}
 	// DOWN|UP -> DOT
 			case DotWord: 
-				next = dotting(next,cur,token,commands,wg,cit_count)
+				next = dotting(next,cur,token,commands,wait_exec,cit_count)
 			}
 		case Int:
 	// INT -> CIT|CMD
@@ -156,11 +170,11 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGro
 				}
 	// INT -> DOT
 			} else { 
-				next = dotting(next,cur,token,commands,wg,cit_count)
+				next = dotting(next,cur,token,commands,wait_exec,cit_count)
 			}
 	// COL -> DOT
 		case Color: 
-			next = dotting(next,cur,token,commands,wg,cit_count)
+			next = dotting(next,cur,token,commands,wait_exec,cit_count)
 		case Dot:
 	// DOT -> CIT
 			if _,b := token.(Cit); b && (cit_count != 0) { 
@@ -168,7 +182,7 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGro
 				// sätt nytt mål ett steg högre
 				cur = backtrack(&next,cur)
 				if cit_count == 0 {
-					repeat(next.list,commands,wg)
+					repeat(next.list,commands,wait_exec)
 					next = Command{}
 				}
 	// DOT -> CMD
@@ -182,7 +196,7 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGro
 				// sätt nytt mål ett steg högre
 				cur = backtrack(&next,cur)
 				if cit_count == 0 {
-					repeat(next.list,commands,wg)
+					repeat(next.list,commands,wait_exec)
 					next = Command{}
 				}
 	// CIT -> CMD
@@ -193,6 +207,7 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGro
 			next = ins_cmd(next,token)
 		}
 		prev = token
+		wait_toks.Done()
 	}
 }
 
@@ -248,11 +263,11 @@ func repeat(list []Command,cmds chan<- Command, wg *sync.WaitGroup) {
 	}
 }
 
-func Executor(commands <-chan Command, wg *sync.WaitGroup, output chan<- string) {
+func Executor(commands <-chan Command, wait_exec *sync.WaitGroup, output chan<- string) {
 	var answer string
 	for command := range commands {
 		answer += "{" + command.name + " " + command.arg + "} "
-		wg.Done()
+		wait_exec.Done()
 	}
 	output <- answer
 }
