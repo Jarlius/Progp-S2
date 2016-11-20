@@ -121,6 +121,7 @@ func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool) {
 func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGroup) {
 	var cit_count int
 	var next Command
+	var cur *Command = &next
 	var prev interface{}
 	for token := range tokens {
 		switch prev := prev.(type) {
@@ -132,30 +133,31 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGro
 					next.arg = arg.val
 				}
 	// COLOR -> COL
-			case ColWord: 
+			case ColWord:
 				if arg,b := token.(Color); b {
 					next.arg = arg.val
 				}
 	// DOWN|UP -> DOT
 			case DotWord: 
-				next = dotting(next,token,commands,wg,cit_count)
+				next = dotting(next,cur,token,commands,wg,cit_count)
 			}
 		case Int:
 	// INT -> CIT|CMD
-			if next.name == "REP" && cit_count == 0 { 
-				// TODO: nytt rep = flytta målet för replista till next.list
+			if next.name == "REP" { 
+				// Sätter cur ett steg lägre för ny lista
+				(*cur).list = append((*cur).list,Command{})
+				cur = &(*cur).list[len((*cur).list)-1]
+				*cur = Command{next.name,next.arg,[]Command{}}
 				if _,b := token.(Cit); b {
 					cit_count++
-				} else {
-					next = ins_cmd(next,token)
 				}
 	// INT -> DOT
 			} else { 
-				next = dotting(next,token,commands,wg,cit_count)
+				next = dotting(next,cur,token,commands,wg,cit_count)
 			}
 	// COL -> DOT
 		case Color: 
-			next = dotting(next,token,commands,wg,cit_count)
+			next = dotting(next,cur,token,commands,wg,cit_count)
 		case Dot:
 	// DOT -> CIT
 			if _,b := token.(Cit); b && (cit_count != 0) { 
@@ -180,6 +182,7 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGro
 			next = ins_cmd(next,token)
 		}
 		prev = token
+		fmt.Println(next)
 	}
 }
 
@@ -190,18 +193,19 @@ func ins_cmd(target Command, token interface{}) Command {
 	return target
 }
 
-func dotting(target Command, token interface{}, cmds chan<- Command, wg *sync.WaitGroup, cits int) Command {
+func dotting(source Command, target *Command, token interface{}, cmds chan<- Command, wg *sync.WaitGroup, cits int) Command {
 	if _,b := token.(Dot); b {
 		if cits == 0 {
 			// TODO: om next.name är REP så skicka dess lista r gånger till cmds
 			wg.Add(1)
-			cmds <- target
-			target = Command{}
+			cmds <- source
+			source = Command{}
+			target = &source
 		} else {
-			target.list = append(target.list,Command{target.name,target.arg,[]Command{}})
+			(*target).list = append((*target).list,Command{source.name,source.arg,[]Command{}})
 		}
 	}
-	return target
+	return source
 }
 
 func Executor(commands <-chan Command, wg *sync.WaitGroup, output chan<- string) {
