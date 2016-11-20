@@ -281,8 +281,8 @@ func Executor(commands <-chan Command, wg *sync.WaitGroup, output chan<- string)
 					answer += color + " " + FloatToString(x1) + " " + FloatToString(y1) + " " + FloatToString(x2)+ " " + FloatToString(y2) + "\n"
 				}											
 			case "BACK":
-				y2+=math.Sin((float64(rotation)*math.Pi/180))*StringToFloat(command.arg)
-				x2+=math.Cos((float64(rotation)*math.Pi/180))*StringToFloat(command.arg)
+				y2-=math.Sin((float64(rotation)*math.Pi/180))*StringToFloat(command.arg)
+				x2-=math.Cos((float64(rotation)*math.Pi/180))*StringToFloat(command.arg)
 				//går att bli av med i extern funktion men blir mer kod
 				if down {
 					answer += color + " " + FloatToString(x1) + " " + FloatToString(y1) + " " + FloatToString(x2)+ " " + FloatToString(y2) + "\n"
