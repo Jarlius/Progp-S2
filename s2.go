@@ -150,6 +150,8 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGro
 				*cur = Command{next.name,next.arg,[]Command{}}
 				if _,b := token.(Cit); b {
 					cit_count++
+				} else {
+					next = ins_cmd(next,token)
 				}
 	// INT -> DOT
 			} else { 
@@ -162,8 +164,12 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGro
 	// DOT -> CIT
 			if _,b := token.(Cit); b && (cit_count != 0) { 
 				cit_count--
-				// TODO: multiplicera djupaste listan
-				// TODO: sätt nytt mål ett steg högre
+				// sätt nytt mål ett steg högre
+				cur = backtrack(&next,cur)
+				if cit_count == 0 {
+					repeat(next.list)
+					next = Command{}
+				}
 	// DOT -> CMD
 			} else { 
 				next = ins_cmd(next,token)
@@ -172,8 +178,12 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGro
 	// CIT -> CIT
 			if _,b := token.(Cit); b && (cit_count != 0) { 
 				cit_count--
-				// TODO: multiplicera djupaste listan
-				// TODO: sätt nytt mål ett steg högre
+				// sätt nytt mål ett steg högre
+				cur = backtrack(&next,cur)
+				if cit_count == 0 {
+					repeat(next.list)
+					next = Command{}
+				}
 	// CIT -> CMD
 			} else { 
 				next = ins_cmd(next,token)
@@ -182,7 +192,6 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wg *sync.WaitGro
 			next = ins_cmd(next,token)
 		}
 		prev = token
-		fmt.Println(next)
 	}
 }
 
@@ -196,9 +205,14 @@ func ins_cmd(target Command, token interface{}) Command {
 func dotting(source Command, target *Command, token interface{}, cmds chan<- Command, wg *sync.WaitGroup, cits int) Command {
 	if _,b := token.(Dot); b {
 		if cits == 0 {
-			// TODO: om next.name är REP så skicka dess lista r gånger till cmds
-			wg.Add(1)
-			cmds <- source
+			// om replistan inte är tom, skicka den till repeat
+			if len(source.list) != 0 {
+				(*target).list = append((*target).list,Command{source.name,source.arg,[]Command{}})
+				repeat(source.list)
+			} else {
+				wg.Add(1)
+				cmds <- source
+			}
 			source = Command{}
 			target = &source
 		} else {
@@ -206,6 +220,21 @@ func dotting(source Command, target *Command, token interface{}, cmds chan<- Com
 		}
 	}
 	return source
+}
+
+func backtrack(first *Command,current *Command) *Command {
+	if len((*first).list) == 0 {
+		return first
+	}
+	edge := &(*first).list[len(first.list)-1]
+	if edge == current {
+		return first
+	}
+	return backtrack(edge,current)
+}
+
+func repeat(list []Command) {
+	fmt.Println(list)
 }
 
 func Executor(commands <-chan Command, wg *sync.WaitGroup, output chan<- string) {
