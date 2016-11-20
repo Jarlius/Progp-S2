@@ -41,6 +41,14 @@ func main() {
 	wait_toks := new(sync.WaitGroup)
 	wait_exec := new(sync.WaitGroup)
 
+	done := make(chan bool)
+	go func() {
+		wait_rows.Wait()
+		wait_toks.Wait()
+		wait_exec.Wait()
+		done <- true
+	}()
+	
 	go Analyser(input,tokens,badsyntax,wait_rows,wait_toks)
 	go Parser(tokens,commands,badorder,wait_toks,wait_exec)
 	go Executor(commands,wait_exec,output)
@@ -54,12 +62,17 @@ func main() {
 		}
 	}
 
-	wait_rows.Wait()
+	
+	if <-done {
+		close(commands)
+		fmt.Println(<-output)
+	}
+/*	wait_rows.Wait()
 	wait_toks.Wait()
 	wait_exec.Wait()
 	close(commands)
 	fmt.Println(<-output)
-}
+*/}
 
 func Analyser(input <-chan string, tokens chan<- interface{}, bad chan<- bool, wait_rows *sync.WaitGroup, wait_toks *sync.WaitGroup) {
 	spacgex,_ := regexp.Compile(`^\s*([^\s]+[\s\.\%]|[\."])$`) 
