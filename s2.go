@@ -40,16 +40,19 @@ func main() {
 	wait_exec := new(sync.WaitGroup)
 	success := make(chan bool)
 	error_row := make(chan int)
+	citations := make(chan int)
 	
 	go Analyser(input,tokens,wait_rows,wait_toks,success,error_row)
-	go Parser(tokens,commands,wait_toks,wait_exec,success,error_row)
+	go Parser(tokens,commands,wait_toks,wait_exec,success,error_row,citations)
 	go Executor(commands,wait_exec,output)
 	
 	wait_rows.Add(1)
+	max := 0
 	go func() {
 		for scanner.Scan() {
 			wait_rows.Add(1)
 			input <- scanner.Text()
+			max++
 		}
 		wait_rows.Done()
 	}()
@@ -63,6 +66,11 @@ func main() {
 
 	if <-success {
 		close(commands)
+		close(tokens)
+		if <-citations != 0 {
+			fmt.Printf("Syntaxfel på rad %d\n", max)
+			return
+		}
 		fmt.Println(<-output)
 	} else {
 		row := <- error_row
@@ -78,8 +86,8 @@ func Analyser(input <-chan string, tokens chan<- interface{}, wait_rows *sync.Wa
 	colorex,_ := regexp.Compile(`^\#[A-Z\d]{6}$`)
 	integex,_ := regexp.Compile(`^\d+$`)
 	nullgex,_ := regexp.Compile(`^\s*\%$`)
+	row := 1
 	for s := range input {
-		row := 1
 		words := strings.ToUpper(s + " ")
 		word := " "
 		for _,r := range words {
@@ -135,7 +143,7 @@ func Analyser(input <-chan string, tokens chan<- interface{}, wait_rows *sync.Wa
 	}
 }
 
-func Parser(tokens <-chan interface{}, commands chan<- Command, wait_toks *sync.WaitGroup, wait_exec *sync.WaitGroup, success chan<- bool, erow chan<- int) {
+func Parser(tokens <-chan interface{}, commands chan<- Command, wait_toks *sync.WaitGroup, wait_exec *sync.WaitGroup, success chan<- bool, erow chan<- int,citations chan<- int) {
 	var cit_count int
 	var next Command
 	var cur *Command = &next
@@ -218,6 +226,7 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wait_toks *sync.
 		prev = token
 		wait_toks.Done()
 	}
+	citations <- cit_count
 }
 
 func get_row(token interface{}) int {
