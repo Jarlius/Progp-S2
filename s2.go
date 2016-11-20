@@ -143,16 +143,18 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wait_toks *sync.
 			case IntWord:
 				if arg,b := token.(Int); b {
 					next.arg = arg.val
+				} else {
+					// TODO: här kan det bli syntaxfel
+					success <- false
 				}
-				// TODO: här kan det bli syntaxfel
-				success <- false
 	// COLOR -> COL
 			case ColWord:
 				if arg,b := token.(Color); b {
 					next.arg = arg.val
+				} else {
+					// TODO: här kan det bli syntaxfel
+					success <- false
 				}
-				// TODO: här kan det bli syntaxfel
-				success <- false
 	// DOWN|UP -> DOT
 			case DotWord: 
 				next = dotting(next,cur,token,commands,wait_exec,cit_count,success)
@@ -215,9 +217,10 @@ func Parser(tokens <-chan interface{}, commands chan<- Command, wait_toks *sync.
 func ins_cmd(target Command, token interface{}, success chan<- bool) Command {
 	if cmd,b := token.(Word); b {
 		target.name = reflect.ValueOf(cmd.word).Field(0).String()
+	} else {
+		// TODO: här kan det bli syntaxfel
+		success <- false
 	}
-	// TODO: här kan det bli syntaxfel
-	success <- false
 	return target
 }
 
@@ -237,9 +240,10 @@ func dotting(source Command, target *Command, token interface{}, cmds chan<- Com
 		} else {
 			(*target).list = append((*target).list,Command{source.name,source.arg,[]Command{}})
 		}
+	} else {
+		success <- false
+		// TODO: här kan det bli syntaxfel
 	}
-	success <- false
-	// TODO: här kan det bli syntaxfel
 	return source
 }
 
