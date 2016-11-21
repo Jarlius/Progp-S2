@@ -6,9 +6,8 @@ import (
 	"sync"
 	"strings"
 	"strconv"
-	"math"
 	"regexp"
-	"reflect"
+	"math"
 	"fmt"
 )
 
@@ -231,7 +230,14 @@ func Parser(tokens <-chan Token, commands chan<- Command, wait_toks *sync.WaitGr
 func ins_cmd(target Command, tokenstruct Token, erow chan<- int) Command {
 	token := tokenstruct.tok
 	if cmd,b := token.(Word); b {
-		target.name = reflect.ValueOf(cmd.word).Field(0).String()
+		switch word := cmd.word.(type) {
+		case IntWord:
+			target.name = word.val
+		case ColWord:
+			target.name = word.val
+		case DotWord:
+			target.name = word.val
+		}
 	} else {
 		erow <- tokenstruct.row
 	}
