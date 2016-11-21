@@ -166,14 +166,14 @@ func Parser(tokens <-chan Token, commands chan<- Command, wait_toks *sync.WaitGr
 				}
 	// DOWN|UP -> DOT
 			case DotWord: 
-				next = dotting(next,cur,tokenstruct,commands,cit_count,wait_exec,erow)
+				cur = dotting(&next,cur,tokenstruct,commands,wait_exec,erow)
 			}
 		case Int:
 	// INT -> CIT|CMD
 			if next.name == "REP" { 
 				// Sätter cur ett steg lägre för ny lista
 				(*cur).list = append((*cur).list,Command{})
-				cur = &(*cur).list[0]
+				cur = &(*cur).list[len((*cur).list)-1]
 				if _,b := token.(Cit); b {
 					*cur = Command{next.name,next.arg,[]Command{},false}
 					cit_count++
@@ -183,24 +183,18 @@ func Parser(tokens <-chan Token, commands chan<- Command, wait_toks *sync.WaitGr
 				}
 	// INT -> DOT
 			} else { 
-				next = dotting(next,cur,tokenstruct,commands,cit_count,wait_exec,erow)
+				cur = dotting(&next,cur,tokenstruct,commands,wait_exec,erow)
 			}
 	// COL -> DOT
 		case Color: 
-			next = dotting(next,cur,tokenstruct,commands,cit_count,wait_exec,erow)
+			cur = dotting(&next,cur,tokenstruct,commands,wait_exec,erow)
 		case Dot:
 	// DOT -> CIT
 			if _,b := token.(Cit); b && (cit_count != 0) { 
 				cit_count--
 				// sätt nytt mål ett steg högre
 				cur = Backtrack(&next,cur)
-				for (*cur).nocit {
-					cur = Backtrack(&next,cur)
-				}
-				if &next == cur {
-					Repeat(next.list,commands,wait_exec)
-					next = Command{}
-				}
+				cur = exit(&next,cur,commands,wait_exec)
 	// DOT -> CMD
 			} else { 
 				next = InsertWord(next,tokenstruct,erow)
@@ -211,13 +205,7 @@ func Parser(tokens <-chan Token, commands chan<- Command, wait_toks *sync.WaitGr
 				cit_count--
 				// sätt nytt mål ett steg högre
 				cur = Backtrack(&next,cur)
-				for (*cur).nocit {
-					cur = Backtrack(&next,cur)
-				}
-				if &next == cur {
-					Repeat(next.list,commands,wait_exec)
-					next = Command{}
-				}
+				cur = exit(&next,cur,commands,wait_exec)
 	// CIT -> CMD
 			} else { 
 				next = InsertWord(next,tokenstruct,erow)
@@ -226,7 +214,8 @@ func Parser(tokens <-chan Token, commands chan<- Command, wait_toks *sync.WaitGr
 			next = InsertWord(next,tokenstruct,erow)
 		}
 		prev = token
-		fmt.Println(next)
+//		fmt.Println(next)
+//		fmt.Println(*cur)
 		wait_toks.Done()
 	}
 	_,dot := prev.(Dot)
@@ -255,28 +244,33 @@ func InsertWord(target Command, tokenstruct Token, erow chan<- int) Command {
 	return target
 }
 
-func dotting(source Command, target *Command, tokenstruct Token, cmds chan<- Command, cits int, wg *sync.WaitGroup, erow chan<- int) Command {
+func dotting(source *Command, target *Command, tokenstruct Token, cmds chan<- Command, wg *sync.WaitGroup, erow chan<- int) *Command {
 	token := tokenstruct.tok
 	if _,b := token.(Dot); b {
-		if len(source.list) == 0 {
+		if len((*source).list) == 0 {
 			wg.Add(1)
-			cmds <- source
-			source = Command{}
-			target = &source
+			cmds <- *source
+			*source = Command{}
+			target = source // onödigt?
 		} else {
 			(*target).list = append((*target).list,Command{source.name,source.arg,[]Command{},false})
-			for (*target).nocit {
-				target = Backtrack(&source,target)
-				if &source == target {
-					Repeat(source.list,cmds,wg)
-					source = Command{}
-				}
-			}
+			target = exit(source,target,cmds,wg)
 		}
 	} else {
 		erow <- tokenstruct.row
 	}
-	return source
+	return target
+}
+
+func exit(source *Command,target *Command,cmds chan<- Command, wg *sync.WaitGroup) *Command {
+	for (*target).nocit {
+		target = Backtrack(source,target)
+	}
+	if source == target {
+		Repeat((*source).list,cmds,wg)
+		*source = Command{}
+	}
+	return target
 }
 
 func Backtrack(first *Command,current *Command) *Command {
