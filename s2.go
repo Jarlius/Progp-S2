@@ -80,7 +80,7 @@ func Analyser(input <-chan string, tokens chan<- Token, wait_rows *sync.WaitGrou
 	cwordex,_ := regexp.Compile(`^COLOR$`)
 	dwordex,_ := regexp.Compile(`^(DOWN|UP)$`)
 	colorex,_ := regexp.Compile(`^\#[A-Z\d]{6}$`)
-	integex,_ := regexp.Compile(`^\d+$`)
+	integex,_ := regexp.Compile(`^[1-9]\d*$`)
 	nullgex,_ := regexp.Compile(`^\s*\%$`)
 	row := 1
 	for s := range input {
