@@ -39,19 +39,16 @@ func main() {
 	wait_toks := new(sync.WaitGroup)
 	wait_exec := new(sync.WaitGroup)
 	error_row := make(chan int)
-	citations := make(chan int)
 	
 	go Analyser(input,tokens,wait_rows,wait_toks,error_row)
-	go Parser(tokens,commands,wait_toks,wait_exec,error_row,citations)
+	go Parser(tokens,commands,wait_toks,wait_exec,error_row)
 	go Executor(commands,wait_exec,output)
 	
 	wait_rows.Add(1)
-	max := 0
 	go func() {
 		for scanner.Scan() {
 			wait_rows.Add(1)
 			input <- scanner.Text()
-			max++
 		}
 		wait_rows.Done()
 	}()
@@ -66,12 +63,12 @@ func main() {
 	if erow := <-error_row; erow != 0 {
 		fmt.Printf("Syntaxfel på rad %d\n", erow)
 	} else {
-		close(commands)
 		close(tokens)
-		if <-citations != 0 {
-			fmt.Printf("Syntaxfel på rad %d\n", max)
+		if last := <-error_row; last != 0 {
+			fmt.Printf("Syntaxfel på rad %d\n", last)
 			return
 		}
+		close(commands)
 		fmt.Println(<-output)
 	}
 }
@@ -140,14 +137,15 @@ func Analyser(input <-chan string, tokens chan<- Token, wait_rows *sync.WaitGrou
 	}
 }
 
-func Parser(tokens <-chan Token, commands chan<- Command, wait_toks *sync.WaitGroup, wait_exec *sync.WaitGroup, erow chan<- int,citations chan<- int) {
-//	var commanding bool
+func Parser(tokens <-chan Token, commands chan<- Command, wait_toks *sync.WaitGroup, wait_exec *sync.WaitGroup, erow chan<- int) {
+	var last_row int
 	var cit_count int
 	var next Command
 	var cur *Command = &next
 	var prev interface{}
 	for tokenstruct := range tokens {
 		token := tokenstruct.tok
+		last_row = tokenstruct.row
 		switch prev := prev.(type) {
 		case Word:
 			switch prev.word.(type) {
@@ -179,7 +177,7 @@ func Parser(tokens <-chan Token, commands chan<- Command, wait_toks *sync.WaitGr
 				if _,b := token.(Cit); b {
 					cit_count++
 				} else {
-					next = ins_cmd(next,tokenstruct,erow)
+					next = InsertWord(next,tokenstruct,erow)
 				}
 	// INT -> DOT
 			} else { 
@@ -193,41 +191,43 @@ func Parser(tokens <-chan Token, commands chan<- Command, wait_toks *sync.WaitGr
 			if _,b := token.(Cit); b && (cit_count != 0) { 
 				cit_count--
 				// sätt nytt mål ett steg högre
-				cur = backtrack(&next,cur)
+				cur = Backtrack(&next,cur)
 				if cit_count == 0 {
-//					commanding = false
-					repeat(next.list,commands,wait_exec)
+					Repeat(next.list,commands,wait_exec)
 					next = Command{}
 				}
 	// DOT -> CMD
 			} else { 
-				next = ins_cmd(next,tokenstruct,erow)
+				next = InsertWord(next,tokenstruct,erow)
 			}
 		case Cit:
 	// CIT -> CIT
 			if _,b := token.(Cit); b && (cit_count != 0) { 
 				cit_count--
 				// sätt nytt mål ett steg högre
-				cur = backtrack(&next,cur)
+				cur = Backtrack(&next,cur)
 				if cit_count == 0 {
-//					commanding = false
-					repeat(next.list,commands,wait_exec)
+					Repeat(next.list,commands,wait_exec)
 					next = Command{}
 				}
 	// CIT -> CMD
 			} else { 
-				next = ins_cmd(next,tokenstruct,erow)
+				next = InsertWord(next,tokenstruct,erow)
 			}
 		default:
-			next = ins_cmd(next,tokenstruct,erow)
+			next = InsertWord(next,tokenstruct,erow)
 		}
 		prev = token
 		wait_toks.Done()
 	}
-	citations <- cit_count
+	if cit_count != 0 {
+		erow <- last_row
+	} else {
+		erow <- 0
+	}
 }
 
-func ins_cmd(target Command, tokenstruct Token, erow chan<- int) Command {
+func InsertWord(target Command, tokenstruct Token, erow chan<- int) Command {
 	token := tokenstruct.tok
 	if cmd,b := token.(Word); b {
 		switch word := cmd.word.(type) {
@@ -248,10 +248,10 @@ func dotting(source Command, target *Command, tokenstruct Token, cmds chan<- Com
 	token := tokenstruct.tok
 	if _,b := token.(Dot); b {
 		if cits == 0 {
-			// om replistan inte är tom, skicka den till repeat
+			// om replistan inte är tom, skicka den till Repeat
 			if len(source.list) != 0 {
 				(*target).list = append((*target).list,Command{source.name,source.arg,[]Command{}})
-				repeat(source.list,cmds,wg)
+				Repeat(source.list,cmds,wg)
 			} else {
 				wg.Add(1)
 				cmds <- source
@@ -267,7 +267,7 @@ func dotting(source Command, target *Command, tokenstruct Token, cmds chan<- Com
 	return source
 }
 
-func backtrack(first *Command,current *Command) *Command {
+func Backtrack(first *Command,current *Command) *Command {
 	if len((*first).list) == 0 {
 		return first
 	}
@@ -275,15 +275,15 @@ func backtrack(first *Command,current *Command) *Command {
 	if edge == current {
 		return first
 	}
-	return backtrack(edge,current)
+	return Backtrack(edge,current)
 }
 
-func repeat(list []Command,cmds chan<- Command, wg *sync.WaitGroup) {
+func Repeat(list []Command,cmds chan<- Command, wg *sync.WaitGroup) {
 	for _,cmd := range list {
 		if cmd.name == "REP" {
 			reps,_ := strconv.Atoi(cmd.arg)
 			for i := 0; i < reps; i++ {
-				repeat(cmd.list,cmds,wg)
+				Repeat(cmd.list,cmds,wg)
 			}
 		} else {
 			wg.Add(1)
