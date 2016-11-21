@@ -220,7 +220,9 @@ func Parser(tokens <-chan Token, commands chan<- Command, wait_toks *sync.WaitGr
 		prev = token
 		wait_toks.Done()
 	}
-	if cit_count != 0 {
+	_,dot := prev.(Dot)
+	_,cit := prev.(Cit)
+	if cit_count != 0 || (!dot && !cit) {
 		erow <- last_row
 	} else {
 		erow <- 0
