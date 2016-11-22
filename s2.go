@@ -143,7 +143,7 @@ func Parser(tokens <-chan Token, commands chan<- Command, wait_toks *sync.WaitGr
 	var cit_count int
 	var next Command
 	var cur *Command = &next
-	var prev interface{}
+	var prev interface{} = Dot{}
 	for tokenstruct := range tokens {
 		token := tokenstruct.tok
 		last_row = tokenstruct.row
@@ -201,7 +201,7 @@ func Parser(tokens <-chan Token, commands chan<- Command, wait_toks *sync.WaitGr
 			}
 		case Cit:
 	// CIT -> CIT
-			if _,b := token.(Cit); b && (cit_count != 0) { 
+			if _,b := token.(Cit); b && (cit_count != 0) && (next.name != "REP") { 
 				cit_count--
 				// sätt nytt mål ett steg högre
 				cur = Backtrack(&next,cur)
@@ -210,12 +210,8 @@ func Parser(tokens <-chan Token, commands chan<- Command, wait_toks *sync.WaitGr
 			} else { 
 				next = InsertWord(next,tokenstruct,erow)
 			}
-		default:
-			next = InsertWord(next,tokenstruct,erow)
 		}
 		prev = token
-//		fmt.Println(next)
-//		fmt.Println(*cur)
 		wait_toks.Done()
 	}
 	_,dot := prev.(Dot)
