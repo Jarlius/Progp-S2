@@ -35,15 +35,18 @@ func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 	input := make(chan string)
 	tokens := make(chan Token)
+	reps := make(chan []Command)
 	commands := make(chan Command)
 	output := make(chan string)
 	wait_rows := new(sync.WaitGroup)
 	wait_toks := new(sync.WaitGroup)
+	wait_send := new(sync.WaitGroup)
 	wait_exec := new(sync.WaitGroup)
 	error_row := make(chan int)
 	
 	go Analyser(input,tokens,wait_rows,wait_toks,error_row)
-	go Parser(tokens,commands,wait_toks,wait_exec,error_row)
+	go Parser(tokens,reps,wait_toks,wait_send,error_row)
+	go Repeater(reps,commands,wait_send,wait_exec)
 	go Executor(commands,wait_exec,output)
 	
 	wait_rows.Add(1)
@@ -58,6 +61,7 @@ func main() {
 	go func() {
 		wait_rows.Wait()
 		wait_toks.Wait()
+		wait_send.Wait()
 		wait_exec.Wait()
 		error_row <- 0
 	}()
@@ -139,7 +143,7 @@ func Analyser(input <-chan string, tokens chan<- Token, wait_rows *sync.WaitGrou
 	}
 }
 
-func Parser(tokens <-chan Token, commands chan<- Command, wait_toks *sync.WaitGroup, wait_exec *sync.WaitGroup, erow chan<- int) {
+func Parser(tokens <-chan Token, reps chan<- []Command, wait_toks *sync.WaitGroup, wait_send *sync.WaitGroup, erow chan<- int) {
 	var last_row int
 	var cit_count int
 	var next Command
@@ -192,14 +196,14 @@ func Parser(tokens <-chan Token, commands chan<- Command, wait_toks *sync.WaitGr
 			switch prev := prev.(type) {
 			case Word: // DOWN|UP -> DOT
 				if _,b := prev.word.(DotWord); b {
-					cur = dotting(&next,cur,tokenstruct,commands,wait_exec,erow)
+					cur = EndCommand(&next,cur,tokenstruct,reps,wait_send,erow)
 				} else {
 					erow <- tokenstruct.row
 				}
 			case Int: // INT -> DOT
-				cur = dotting(&next,cur,tokenstruct,commands,wait_exec,erow)
+				cur = EndCommand(&next,cur,tokenstruct,reps,wait_send,erow)
 			case Color: // COL -> DOT
-				cur = dotting(&next,cur,tokenstruct,commands,wait_exec,erow)
+				cur = EndCommand(&next,cur,tokenstruct,reps,wait_send,erow)
 			default:
 				erow <- tokenstruct.row
 			}
@@ -215,21 +219,21 @@ func Parser(tokens <-chan Token, commands chan<- Command, wait_toks *sync.WaitGr
 				} else {
 					erow <- tokenstruct.row
 				}
-			case Dot: // DOT -> CIT
+			case Dot: // DOT -> CIT - end citation
 				if cit_count != 0 { 
 					cit_count--
 					// sätt nytt mål ett steg högre
 					cur = (*cur).back
-					cur = ExitRep(&next,cur,commands,wait_exec)
+					cur = ExitRep(&next,cur,reps,wait_send)
 				} else {
 					erow <- tokenstruct.row
 				}
-			case Cit: // CIT -> CIT
+			case Cit: // CIT -> CIT - end citation
 				if (cit_count != 0) && (next.name != "REP") { 
 					cit_count--
 					// sätt nytt mål ett steg högre
 					cur = (*cur).back
-					cur = ExitRep(&next,cur,commands,wait_exec)
+					cur = ExitRep(&next,cur,reps,wait_send)
 				} else {
 					erow <- tokenstruct.row
 				}
@@ -266,17 +270,15 @@ func InsertWord(target Command, tokenstruct Token, erow chan<- int) Command {
 	return target
 }
 
-func dotting(source *Command, target *Command, tokenstruct Token, cmds chan<- Command, wg *sync.WaitGroup, erow chan<- int) *Command {
-	token := tokenstruct.tok
-	if _,b := token.(Dot); b {
+func EndCommand(source *Command, target *Command, tokenstruct Token, reps chan<- []Command, wg *sync.WaitGroup, erow chan<- int) *Command {
+	if _,b := tokenstruct.tok.(Dot); b {
 		if len((*source).list) == 0 {
 			wg.Add(1)
-			cmds <- *source
+			reps <- []Command{*source}
 			*source = Command{}
-			target = source // onödigt?
 		} else {
 			(*target).list = append((*target).list,Command{source.name,source.arg,[]Command{},target,false})
-			target = ExitRep(source,target,cmds,wg)
+			target = ExitRep(source,target,reps,wg)
 		}
 	} else {
 		erow <- tokenstruct.row
@@ -284,15 +286,23 @@ func dotting(source *Command, target *Command, tokenstruct Token, cmds chan<- Co
 	return target
 }
 
-func ExitRep(source *Command,target *Command,cmds chan<- Command, wg *sync.WaitGroup) *Command {
+func ExitRep(source *Command,target *Command,reps chan<- []Command, wg *sync.WaitGroup) *Command {
 	for (*target).nocit {
 		target = (*target).back
 	}
 	if source == target {
-		Repeat((*source).list,cmds,wg)
+		wg.Add(1)
+		reps <- (*source).list
 		*source = Command{}
 	}
 	return target
+}
+
+func Repeater(reps <-chan []Command, cmds chan<- Command, wait_send *sync.WaitGroup, wait_exec *sync.WaitGroup) {
+	for list := range reps {
+		Repeat(list,cmds,wait_exec)
+		wait_send.Done()
+	}
 }
 
 func Repeat(list []Command,cmds chan<- Command, wg *sync.WaitGroup) {
