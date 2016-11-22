@@ -27,6 +27,7 @@ type Command struct {
 	name string
 	arg string
 	list []Command
+	back *Command
 	nocit bool
 }
 
@@ -147,68 +148,93 @@ func Parser(tokens <-chan Token, commands chan<- Command, wait_toks *sync.WaitGr
 	for tokenstruct := range tokens {
 		token := tokenstruct.tok
 		last_row = tokenstruct.row
-		switch prev := prev.(type) {
+		switch token := token.(type) {
 		case Word:
-			switch prev.word.(type) {
-	// FORW|BACK|LEFT|RIGHT|REP -> INT
-			case IntWord:
-				if arg,b := token.(Int); b {
-					next.arg = arg.val
-				} else {
-					erow <- tokenstruct.row
-				}
-	// COLOR -> COL
-			case ColWord:
-				if arg,b := token.(Color); b {
-					next.arg = arg.val
-				} else {
-					erow <- tokenstruct.row
-				}
-	// DOWN|UP -> DOT
-			case DotWord: 
-				cur = dotting(&next,cur,tokenstruct,commands,wait_exec,erow)
-			}
-		case Int:
-	// INT -> CIT|CMD
-			if next.name == "REP" { 
-				// Sätter cur ett steg lägre för ny lista
-				(*cur).list = append((*cur).list,Command{})
-				cur = &(*cur).list[len((*cur).list)-1]
-				if _,b := token.(Cit); b {
-					*cur = Command{next.name,next.arg,[]Command{},false}
-					cit_count++
-				} else {
-					*cur = Command{next.name,next.arg,[]Command{},true}
-					next = InsertWord(next,tokenstruct,erow)
-				}
-	// INT -> DOT
-			} else { 
-				cur = dotting(&next,cur,tokenstruct,commands,wait_exec,erow)
-			}
-	// COL -> DOT
-		case Color: 
-			cur = dotting(&next,cur,tokenstruct,commands,wait_exec,erow)
-		case Dot:
-	// DOT -> CIT
-			if _,b := token.(Cit); b && (cit_count != 0) { 
-				cit_count--
-				// sätt nytt mål ett steg högre
-				cur = Backtrack(&next,cur)
-				cur = exit(&next,cur,commands,wait_exec)
-	// DOT -> CMD
-			} else { 
+			switch prev.(type) {
+			case Dot: // DOT -> CMD
 				next = InsertWord(next,tokenstruct,erow)
+			case Cit: // CIT -> CMD
+				next = InsertWord(next,tokenstruct,erow)
+			case Int: // INT -> CMD
+				if next.name == "REP" {
+					// Sätter cur ett steg lägre för ny lista
+					leaf := Command{next.name,next.arg,[]Command{},cur,true}
+					(*cur).list = append((*cur).list,leaf)
+					cur = &(*cur).list[len((*cur).list)-1]
+					next = InsertWord(next,tokenstruct,erow)
+				} else {
+					erow <- tokenstruct.row
+				}
+			default:
+				erow <- tokenstruct.row
+			}
+		case Int: // FORW|BACK|LEFT|RIGHT|REP -> INT
+			if cmd,b := prev.(Word); b {
+				if _,b := cmd.word.(IntWord); b {
+					next.arg = token.val
+				} else {
+					erow <- tokenstruct.row
+				}
+			} else {
+				erow <- tokenstruct.row
+			}
+		case Color: // COLOR -> COL
+			if cmd,b := prev.(Word); b {
+				if _,b := cmd.word.(ColWord); b {
+					next.arg = token.val
+				} else {
+					erow <- tokenstruct.row
+				}
+			} else {
+				erow <- tokenstruct.row
+			}
+		case Dot:
+			switch prev := prev.(type) {
+			case Word: // DOWN|UP -> DOT
+				if _,b := prev.word.(DotWord); b {
+					cur = dotting(&next,cur,tokenstruct,commands,wait_exec,erow)
+				} else {
+					erow <- tokenstruct.row
+				}
+			case Int: // INT -> DOT
+				cur = dotting(&next,cur,tokenstruct,commands,wait_exec,erow)
+			case Color: // COL -> DOT
+				cur = dotting(&next,cur,tokenstruct,commands,wait_exec,erow)
+			default:
+				erow <- tokenstruct.row
 			}
 		case Cit:
-	// CIT -> CIT
-			if _,b := token.(Cit); b && (cit_count != 0) && (next.name != "REP") { 
-				cit_count--
-				// sätt nytt mål ett steg högre
-				cur = Backtrack(&next,cur)
-				cur = exit(&next,cur,commands,wait_exec)
-	// CIT -> CMD
-			} else { 
-				next = InsertWord(next,tokenstruct,erow)
+			switch prev.(type) {
+			case Int: // INT -> CIT
+				if next.name == "REP" { 
+					// Sätter cur ett steg lägre för ny lista
+					leaf := Command{next.name,next.arg,[]Command{},cur,false}
+					(*cur).list = append((*cur).list,leaf)
+					cur = &(*cur).list[len((*cur).list)-1]
+					cit_count++
+				} else {
+					erow <- tokenstruct.row
+				}
+			case Dot: // DOT -> CIT
+				if cit_count != 0 { 
+					cit_count--
+					// sätt nytt mål ett steg högre
+					cur = (*cur).back
+					cur = ExitRep(&next,cur,commands,wait_exec)
+				} else {
+					erow <- tokenstruct.row
+				}
+			case Cit: // CIT -> CIT
+				if (cit_count != 0) && (next.name != "REP") { 
+					cit_count--
+					// sätt nytt mål ett steg högre
+					cur = (*cur).back
+					cur = ExitRep(&next,cur,commands,wait_exec)
+				} else {
+					erow <- tokenstruct.row
+				}
+			default:
+				erow <- tokenstruct.row
 			}
 		}
 		prev = token
@@ -249,8 +275,8 @@ func dotting(source *Command, target *Command, tokenstruct Token, cmds chan<- Co
 			*source = Command{}
 			target = source // onödigt?
 		} else {
-			(*target).list = append((*target).list,Command{source.name,source.arg,[]Command{},false})
-			target = exit(source,target,cmds,wg)
+			(*target).list = append((*target).list,Command{source.name,source.arg,[]Command{},target,false})
+			target = ExitRep(source,target,cmds,wg)
 		}
 	} else {
 		erow <- tokenstruct.row
@@ -258,26 +284,15 @@ func dotting(source *Command, target *Command, tokenstruct Token, cmds chan<- Co
 	return target
 }
 
-func exit(source *Command,target *Command,cmds chan<- Command, wg *sync.WaitGroup) *Command {
+func ExitRep(source *Command,target *Command,cmds chan<- Command, wg *sync.WaitGroup) *Command {
 	for (*target).nocit {
-		target = Backtrack(source,target)
+		target = (*target).back
 	}
 	if source == target {
 		Repeat((*source).list,cmds,wg)
 		*source = Command{}
 	}
 	return target
-}
-
-func Backtrack(first *Command,current *Command) *Command {
-	if len((*first).list) == 0 {
-		return first
-	}
-	edge := &(*first).list[len(first.list)-1]
-	if edge == current {
-		return first
-	}
-	return Backtrack(edge,current)
 }
 
 func Repeat(list []Command,cmds chan<- Command, wg *sync.WaitGroup) {
