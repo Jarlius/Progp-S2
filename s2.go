@@ -1,3 +1,4 @@
+// Laboration S2 av Jarl Silvén och Simon Hellberg
 package main
 
 import (
@@ -31,6 +32,7 @@ type Command struct {
 	nocit bool
 }
 
+// Mainfunktion, skapar kanaler, trådar och skriver ut slutresultat
 func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 	input := make(chan string)
@@ -46,7 +48,7 @@ func main() {
 	
 	go Analyser(input,tokens,wait_rows,wait_toks,error_row)
 	go Parser(tokens,reps,wait_toks,wait_send,error_row)
-	go Repeater(reps,commands,wait_send,wait_exec)
+	go Sender(reps,commands,wait_send,wait_exec)
 	go Executor(commands,wait_exec,output)
 	
 	wait_rows.Add(1)
@@ -79,6 +81,9 @@ func main() {
 	}
 }
 
+// Tråd för Lexikal Analys, tar emot en rad från Scanner i taget och skickar
+// dess beståndsdelar som tokens. Om tecken inte skapar ett token skickas 
+// felmeddelande till mainfuntion.
 func Analyser(input <-chan string, tokens chan<- Token, wait_rows *sync.WaitGroup, wait_toks *sync.WaitGroup, erow chan<- int) {
 	spacgex,_ := regexp.Compile(`^\s*([^\s]+[\s\.\%]|[\."])$`) 
 	iwordex,_ := regexp.Compile(`^(FORW|BACK|LEFT|RIGHT|REP)$`)
@@ -143,6 +148,9 @@ func Analyser(input <-chan string, tokens chan<- Token, wait_rows *sync.WaitGrou
 	}
 }
 
+// Tråd för Parsning. Tar emot tokens från Analysen i ordning och kollar att
+// kollar att de är semantiskt korrekta, dvs att tokens tillsammans bygger upp
+// korrekta kommandon.
 func Parser(tokens <-chan Token, reps chan<- []Command, wait_toks *sync.WaitGroup, wait_send *sync.WaitGroup, erow chan<- int) {
 	var last_row int
 	var cit_count int
@@ -253,6 +261,7 @@ func Parser(tokens <-chan Token, reps chan<- []Command, wait_toks *sync.WaitGrou
 	}
 }
 
+// Hjälpfunktion till Parser för att sätta in ett Ord i en repetitionslista
 func InsertWord(target Command, tokenstruct Token, erow chan<- int) Command {
 	token := tokenstruct.tok
 	if cmd,b := token.(Word); b {
@@ -270,6 +279,7 @@ func InsertWord(target Command, tokenstruct Token, erow chan<- int) Command {
 	return target
 }
 
+// Vad som händer när token 'punkt' läses av Parsern.
 func EndCommand(source *Command, target *Command, tokenstruct Token, reps chan<- []Command, wg *sync.WaitGroup, erow chan<- int) *Command {
 	if _,b := tokenstruct.tok.(Dot); b {
 		if len((*source).list) == 0 {
@@ -286,6 +296,8 @@ func EndCommand(source *Command, target *Command, tokenstruct Token, reps chan<-
 	return target
 }
 
+// Hjälpfunktion till Parser som klättrar upp ur repetitionsträd så länge
+// repetitionen saknar citationstecken
 func ExitRep(source *Command,target *Command,reps chan<- []Command, wg *sync.WaitGroup) *Command {
 	for (*target).nocit {
 		target = (*target).back
@@ -298,13 +310,16 @@ func ExitRep(source *Command,target *Command,reps chan<- []Command, wg *sync.Wai
 	return target
 }
 
-func Repeater(reps <-chan []Command, cmds chan<- Command, wait_send *sync.WaitGroup, wait_exec *sync.WaitGroup) {
+// Tråd för att sända repetitioner (och vanliga kommandon) till Executor
+func Sender(reps <-chan []Command, cmds chan<- Command, wait_send *sync.WaitGroup, wait_exec *sync.WaitGroup) {
 	for list := range reps {
 		Repeat(list,cmds,wait_exec)
 		wait_send.Done()
 	}
 }
 
+// Repeterar en lista av kommandon r antal gånger - kan anropa sig själv
+// om det stöter på en ny repetition bland kommandona.
 func Repeat(list []Command,cmds chan<- Command, wg *sync.WaitGroup) {
 	for _,cmd := range list {
 		if cmd.name == "REP" {
@@ -319,6 +334,8 @@ func Repeat(list []Command,cmds chan<- Command, wg *sync.WaitGroup) {
 	}
 }
 
+
+// Tråd för exekvering av kommandon, utför självaste sköldpaddekontrollen
 func Executor(commands <-chan Command, wg *sync.WaitGroup, output chan<- string) {
 	var answer string
 	down:= false	
@@ -368,11 +385,13 @@ func Executor(commands <-chan Command, wg *sync.WaitGroup, output chan<- string)
 	output <- answer
 }
 
+// Hjälpfunktion till Executor, konverterar från float till string
 func FloatToString(convert float64) string {
     // to convert a float number to a string
     return strconv.FormatFloat(convert, 'f', 6, 64)
 }
 
+// Hjälpfunktion till Executor, konverterar från string till float
 func StringToFloat(convert string) float64 {
      if n, err:= strconv.ParseFloat(convert, 64); err == nil {
             return n
@@ -383,6 +402,7 @@ func StringToFloat(convert string) float64 {
      }
 }
 
+// Hjälpfunktion till Executor, konverterar från string till int
 func StringToInt(convert string) int {
 	if r, err:= strconv.Atoi(convert);err==nil{
 		return r
