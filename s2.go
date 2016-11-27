@@ -21,6 +21,7 @@ type DotWord struct {val string}
 type Color struct {val string}
 type Int struct {val string}
 
+type RepWord struct {}
 type Dot struct {}
 type Cit struct {}
 
@@ -30,6 +31,15 @@ type Command struct {
 	list []Command
 	back *Command
 	nocit bool
+}
+
+type Turtle struct {
+	down bool	
+	col string
+	rot float64 // i radianer
+	X float64
+	Y float64
+	ans []string
 }
 
 // Mainfunktion, skapar kanaler, trådar och skriver ut slutresultat
@@ -162,7 +172,7 @@ func Parser(tokens <-chan Token, reps chan<- []Command, wait_toks *sync.WaitGrou
 		last_row = tokenstruct.row
 		switch token := token.(type) {
 		case Word:
-			switch prev.(type) {
+			switch prev.(type) {s'
 			case Dot: // DOT -> CMD
 				next = InsertWord(next,tokenstruct,erow)
 			case Cit: // CIT -> CMD
@@ -334,80 +344,96 @@ func Repeat(list []Command,cmds chan<- Command, wg *sync.WaitGroup) {
 	}
 }
 
-
 // Tråd för exekvering av kommandon, utför självaste sköldpaddekontrollen
 func Executor(commands <-chan Command, wg *sync.WaitGroup, output chan<- string) {
-	var answer string
-	down:= false	
-	color:= "#0000ff"
-	rotation:= 0 //(int) degrees
-	x1:= 0.0 //(float64)
-	y1:= 0.0 //(float64)
+	turtle := Turtle{}
+	turtle.col = "#0000FF"
 	for command := range commands {
-		x2:=x1
-		y2:=y1
-		switch command.name {
-			case "DOWN":
-					down = true
-			case "UP":
-					down = false
-			case "FORW": 
-				y2+=math.Sin((float64(rotation)*math.Pi/180))*StringToFloat(command.arg)
-				x2+=math.Cos((float64(rotation)*math.Pi/180))*StringToFloat(command.arg)
-
-				if down {
-					answer += color + " " + FloatToString(x1) + " " + FloatToString(y1) + " " + FloatToString(x2)+ " " + FloatToString(y2) + "\n"
-				}											
-			case "BACK":
-				y2-=math.Sin((float64(rotation)*math.Pi/180))*StringToFloat(command.arg)
-				x2-=math.Cos((float64(rotation)*math.Pi/180))*StringToFloat(command.arg)
-				//går att bli av med i extern funktion men blir mer kod
-				if down {
-					answer += color + " " + FloatToString(x1) + " " + FloatToString(y1) + " " + FloatToString(x2)+ " " + FloatToString(y2) + "\n"
-				}
-			case "LEFT":
-				rotation+=StringToInt(command.arg)
-				
-			case "RIGHT":
-				rotation-=StringToInt(command.arg)
-			case "COLOR": 
-				color = command.arg
-			//case "REP": hanteras inte här 
-			default: 
-				//TODO error message
-		}
-		//ready for next
-		x1=x2
-		y1=y2	
-		//done
+		exemap[command.name](&turtle,command.arg)
 		wg.Done() 
 	}
-	output <- answer
+	output <- strings.Join(turtle.ans," ")
 }
 
-// Hjälpfunktion till Executor, konverterar från float till string
-func FloatToString(convert float64) string {
-    // to convert a float number to a string
-    return strconv.FormatFloat(convert, 'f', 6, 64)
+var exemap = map[string]func(*Turtle,string){
+	"DOWN":ExecDown,
+	"UP":ExecUp,
+	"FORW":ExecForw,
+	"BACK":ExecBack,
+	"LEFT":ExecLeft,
+	"RIGHT":ExecRight,
+	"COLOR":ExecColor,
 }
 
-// Hjälpfunktion till Executor, konverterar från string till float
-func StringToFloat(convert string) float64 {
-     if n, err:= strconv.ParseFloat(convert, 64); err == nil {
-            return n
-     } else {
-     	//TODO error message
-     	return 0.0
-
-     }
+func ExecDown(turtle *Turtle, arg string) {
+	(*turtle).down = true
 }
 
-// Hjälpfunktion till Executor, konverterar från string till int
-func StringToInt(convert string) int {
-	if r, err:= strconv.Atoi(convert);err==nil{
-		return r
+func ExecUp(turtle *Turtle, arg string) {
+	(*turtle).down = false
+}
+
+func ExecForw(turtle *Turtle, arg string) {
+	X2,Y2 := Movement(turtle,arg)
+	if (*turtle).down {
+		X1 := (*turtle).X
+		Y1 := (*turtle).Y
+		(*turtle).X += X2
+		(*turtle).Y += Y2
+		AddToAnswer(turtle, X1, Y1)
 	} else {
-		//TODO Error message
-		return 0	
+		(*turtle).X += X2
+		(*turtle).Y += Y2
 	}
 }
+
+func ExecBack(turtle *Turtle, arg string) {
+	X2,Y2 := Movement(turtle,arg)
+	if (*turtle).down {
+		X1 := (*turtle).X
+		Y1 := (*turtle).Y
+		(*turtle).X -= X2
+		(*turtle).Y -= Y2
+		AddToAnswer(turtle, X1, Y1)
+	} else {
+		(*turtle).X -= X2
+		(*turtle).Y -= Y2
+	}
+}
+
+func ExecLeft(turtle *Turtle, arg string) {
+	(*turtle).rot += DegToRad(arg)
+}
+
+func ExecRight(turtle *Turtle, arg string) {
+	(*turtle).rot -= DegToRad(arg)
+}
+
+func ExecColor(turtle *Turtle, arg string) {
+	(*turtle).col = arg
+}
+
+func Movement(turtle *Turtle, arg string) (float64,float64) {
+	n,_ := strconv.ParseFloat(arg, 64)
+	X := math.Cos((*turtle).rot)*n
+	Y := math.Sin((*turtle).rot)*n
+	return X,Y
+}
+
+func AddToAnswer(turtle *Turtle, X1 float64, Y1 float64) {
+	newans := []string{
+		(*turtle).col,
+		strconv.FormatFloat(X1, 'f', 4, 64),
+		strconv.FormatFloat(Y1, 'f', 4, 64),
+		strconv.FormatFloat((*turtle).X, 'f', 4, 64),
+		strconv.FormatFloat((*turtle).Y, 'f', 4, 64),
+		"\n",
+	}
+	(*turtle).ans = append((*turtle).ans, newans...)
+}
+
+func DegToRad(arg string) float64 {
+	degs,_ := strconv.Atoi(arg)
+	return float64(degs)*math.Pi/180
+}
+
