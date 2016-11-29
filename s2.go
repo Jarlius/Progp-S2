@@ -13,15 +13,16 @@ import (
 )
 
 type Token struct {row int;tok interface{}}
+
 type Word struct {word interface{}}
 type IntWord struct {val string}
 type ColWord struct {val string}
 type DotWord struct {val string}
+type RepWord struct {val string}
 
 type Color struct {val string}
 type Int struct {val string}
 
-type RepWord struct {}
 type Dot struct {}
 type Cit struct {}
 
@@ -29,17 +30,6 @@ type Command struct {
 	name string
 	arg string
 	list []Command
-	back *Command
-	nocit bool
-}
-
-type Turtle struct {
-	down bool	
-	col string
-	rot float64 // i radianer
-	X float64
-	Y float64
-	ans []string
 }
 
 // Mainfunktion, skapar kanaler, trådar och skriver ut slutresultat
@@ -47,7 +37,7 @@ func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 	input := make(chan string)
 	tokens := make(chan Token)
-	reps := make(chan []Command)
+	reps := make(chan Command)
 	commands := make(chan Command)
 	output := make(chan string)
 	wait_rows := new(sync.WaitGroup)
@@ -96,9 +86,10 @@ func main() {
 // felmeddelande till mainfuntion.
 func Analyser(input <-chan string, tokens chan<- Token, wait_rows *sync.WaitGroup, wait_toks *sync.WaitGroup, erow chan<- int) {
 	spacgex,_ := regexp.Compile(`^\s*([^\s]+[\s\.\%]|[\."])$`) 
-	iwordex,_ := regexp.Compile(`^(FORW|BACK|LEFT|RIGHT|REP)$`)
+	iwordex,_ := regexp.Compile(`^(FORW|BACK|LEFT|RIGHT)$`)
 	cwordex,_ := regexp.Compile(`^COLOR$`)
 	dwordex,_ := regexp.Compile(`^(DOWN|UP)$`)
+	rwordex,_ := regexp.Compile(`^REP$`)
 	colorex,_ := regexp.Compile(`^\#[A-Z\d]{6}$`)
 	integex,_ := regexp.Compile(`^[1-9]\d*$`)
 	nullgex,_ := regexp.Compile(`^\s*\%$`)
@@ -126,6 +117,9 @@ func Analyser(input <-chan string, tokens chan<- Token, wait_rows *sync.WaitGrou
 				case dwordex.MatchString(trim):
 					wait_toks.Add(1)
 					tokens <- Token{row,Word{DotWord{trim}}}
+				case rwordex.MatchString(trim):
+					wait_toks.Add(1)
+					tokens <- Token{row,Word{RepWord{trim}}}
 				case integex.MatchString(trim):
 					wait_toks.Add(1)
 					tokens <- Token{row,Int{trim}}
@@ -161,184 +155,150 @@ func Analyser(input <-chan string, tokens chan<- Token, wait_rows *sync.WaitGrou
 // Tråd för Parsning. Tar emot tokens från Analysen i ordning och kollar att
 // kollar att de är semantiskt korrekta, dvs att tokens tillsammans bygger upp
 // korrekta kommandon.
-func Parser(tokens <-chan Token, reps chan<- []Command, wait_toks *sync.WaitGroup, wait_send *sync.WaitGroup, erow chan<- int) {
-	var last_row int
-	var cit_count int
-	var next Command
-	var cur *Command = &next
-	var prev interface{} = Dot{}
-	for tokenstruct := range tokens {
-		token := tokenstruct.tok
-		last_row = tokenstruct.row
-		switch token := token.(type) {
-		case Word:
-			switch prev.(type) {s'
-			case Dot: // DOT -> CMD
-				next = InsertWord(next,tokenstruct,erow)
-			case Cit: // CIT -> CMD
-				next = InsertWord(next,tokenstruct,erow)
-			case Int: // INT -> CMD
-				if next.name == "REP" {
-					// Sätter cur ett steg lägre för ny lista
-					leaf := Command{next.name,next.arg,[]Command{},cur,true}
-					(*cur).list = append((*cur).list,leaf)
-					cur = &(*cur).list[len((*cur).list)-1]
-					next = InsertWord(next,tokenstruct,erow)
-				} else {
-					erow <- tokenstruct.row
-				}
-			default:
-				erow <- tokenstruct.row
-			}
-		case Int: // FORW|BACK|LEFT|RIGHT|REP -> INT
-			if cmd,b := prev.(Word); b {
-				if _,b := cmd.word.(IntWord); b {
-					next.arg = token.val
-				} else {
-					erow <- tokenstruct.row
-				}
-			} else {
-				erow <- tokenstruct.row
-			}
-		case Color: // COLOR -> COL
-			if cmd,b := prev.(Word); b {
-				if _,b := cmd.word.(ColWord); b {
-					next.arg = token.val
-				} else {
-					erow <- tokenstruct.row
-				}
-			} else {
-				erow <- tokenstruct.row
-			}
-		case Dot:
-			switch prev := prev.(type) {
-			case Word: // DOWN|UP -> DOT
-				if _,b := prev.word.(DotWord); b {
-					cur = EndCommand(&next,cur,tokenstruct,reps,wait_send,erow)
-				} else {
-					erow <- tokenstruct.row
-				}
-			case Int: // INT -> DOT
-				cur = EndCommand(&next,cur,tokenstruct,reps,wait_send,erow)
-			case Color: // COL -> DOT
-				cur = EndCommand(&next,cur,tokenstruct,reps,wait_send,erow)
-			default:
-				erow <- tokenstruct.row
-			}
-		case Cit:
-			switch prev.(type) {
-			case Int: // INT -> CIT
-				if next.name == "REP" { 
-					// Sätter cur ett steg lägre för ny lista
-					leaf := Command{next.name,next.arg,[]Command{},cur,false}
-					(*cur).list = append((*cur).list,leaf)
-					cur = &(*cur).list[len((*cur).list)-1]
-					cit_count++
-				} else {
-					erow <- tokenstruct.row
-				}
-			case Dot: // DOT -> CIT - end citation
-				if cit_count != 0 { 
-					cit_count--
-					// sätt nytt mål ett steg högre
-					cur = (*cur).back
-					cur = ExitRep(&next,cur,reps,wait_send)
-				} else {
-					erow <- tokenstruct.row
-				}
-			case Cit: // CIT -> CIT - end citation
-				if (cit_count != 0) && (next.name != "REP") { 
-					cit_count--
-					// sätt nytt mål ett steg högre
-					cur = (*cur).back
-					cur = ExitRep(&next,cur,reps,wait_send)
-				} else {
-					erow <- tokenstruct.row
-				}
-			default:
-				erow <- tokenstruct.row
-			}
-		}
-		prev = token
+func Parser(tokens <-chan Token, reps chan<- Command, wait_toks *sync.WaitGroup, wait_send *sync.WaitGroup, erow chan<- int) {
+	for token := range tokens {
+		message,_ := ParseWord(token,tokens,wait_toks,erow)
+		wait_send.Add(1)
 		wait_toks.Done()
+		reps <- message
 	}
-	_,dot := prev.(Dot)
-	_,cit := prev.(Cit)
-	if cit_count != 0 || (!dot && !cit) {
-		erow <- last_row
-	} else {
-		erow <- 0
-	}
+	erow <- 0
 }
 
-// Hjälpfunktion till Parser för att sätta in ett Ord i en repetitionslista
-func InsertWord(target Command, tokenstruct Token, erow chan<- int) Command {
-	token := tokenstruct.tok
-	if cmd,b := token.(Word); b {
-		switch word := cmd.word.(type) {
+// Rekursiv metod för Parser
+func ParseWord(token Token, tokens <-chan Token, wait_toks *sync.WaitGroup, erow chan<- int) (Command,int) {
+	if word,b := token.tok.(Word); b {
+		wait_toks.Done()
+		switch word := word.word.(type) {
 		case IntWord:
-			target.name = word.val
+			number := <-tokens
+			if num,b := number.tok.(Int); b {
+				wait_toks.Done()			
+				dot := <-tokens
+				if _,b := dot.tok.(Dot); b {
+					return Command{name:word.val,arg:num.val},dot.row
+				} else {
+					if dot.row != 0 {
+						erow <- dot.row
+					} else {
+						erow <- number.row
+					}
+				}
+			} else {
+				if number.row != 0 {
+					erow <- number.row
+				} else {
+					erow <- token.row
+				}
+			}
 		case ColWord:
-			target.name = word.val
+			color := <-tokens
+			if col,b := color.tok.(Color); b {
+				wait_toks.Done()
+				dot := <-tokens
+				if _,b := dot.tok.(Dot); b {
+					return Command{name:word.val,arg:col.val},dot.row
+				} else {
+					if dot.row != 0 {
+						erow <- dot.row
+					} else {
+						erow <- color.row
+					}
+				}
+			} else {
+				if color.row != 0 {
+					erow <- color.row
+				} else {
+					erow <- token.row
+				}
+			}
 		case DotWord:
-			target.name = word.val
+			dot := <-tokens
+			if _,b := dot.tok.(Dot); b {
+				return Command{name:word.val},dot.row
+			} else {
+				if dot.row != 0 {
+					erow <- dot.row
+				} else {
+					erow <- token.row
+				}
+			}			
+		case RepWord:
+			number := <-tokens
+			if num,b := number.tok.(Int); b {
+				wait_toks.Done()
+				citorcmd := <-tokens
+				if _,b := citorcmd.tok.(Cit); b {
+					wait_toks.Done()
+					nextoken := <-tokens
+					if _,b := nextoken.tok.(Word); b {
+						clist := []Command{}
+						var nextcmd Command
+						var prevrow int
+						for end := false; !end && nextoken.row != 0;{
+							nextcmd,prevrow = ParseWord(nextoken,tokens,wait_toks,erow)
+							clist = append(clist,nextcmd)
+							wait_toks.Done()
+							nextoken = <-tokens
+							_,end = nextoken.tok.(Cit)
+						}
+						if nextoken.row != 0 {
+							return Command{word.val,num.val,clist},nextoken.row
+						} else {
+							erow <- prevrow
+						}
+					} else {
+						if nextoken.row != 0 {
+							erow <- nextoken.row
+						} else {
+							erow <- citorcmd.row
+						}
+					}
+				} else if _,b := citorcmd.tok.(Word); b {
+					repcommand,_ := ParseWord(citorcmd,tokens,wait_toks,erow)
+					return Command{word.val,num.val,[]Command{repcommand}},citorcmd.row
+				} else {
+					if citorcmd.row != 0 {
+						erow <- citorcmd.row
+					} else {
+						erow <- number.row
+					}
+				}
+			} else {
+				if number.row != 0 {
+					erow <- number.row
+				} else {
+					erow <- token.row
+				}
+			}
 		}
 	} else {
-		erow <- tokenstruct.row
+		erow <- token.row
 	}
-	return target
-}
-
-// Vad som händer när token 'punkt' läses av Parsern.
-func EndCommand(source *Command, target *Command, tokenstruct Token, reps chan<- []Command, wg *sync.WaitGroup, erow chan<- int) *Command {
-	if _,b := tokenstruct.tok.(Dot); b {
-		if len((*source).list) == 0 {
-			wg.Add(1)
-			reps <- []Command{*source}
-			*source = Command{}
-		} else {
-			(*target).list = append((*target).list,Command{source.name,source.arg,[]Command{},target,false})
-			target = ExitRep(source,target,reps,wg)
-		}
-	} else {
-		erow <- tokenstruct.row
-	}
-	return target
-}
-
-// Hjälpfunktion till Parser som klättrar upp ur repetitionsträd så länge
-// repetitionen saknar citationstecken
-func ExitRep(source *Command,target *Command,reps chan<- []Command, wg *sync.WaitGroup) *Command {
-	for (*target).nocit {
-		target = (*target).back
-	}
-	if source == target {
-		wg.Add(1)
-		reps <- (*source).list
-		*source = Command{}
-	}
-	return target
+	dummy := make(chan struct{})
+	<-dummy
+	return Command{},0
 }
 
 // Tråd för att sända repetitioner (och vanliga kommandon) till Executor
-func Sender(reps <-chan []Command, cmds chan<- Command, wait_send *sync.WaitGroup, wait_exec *sync.WaitGroup) {
-	for list := range reps {
-		Repeat(list,cmds,wait_exec)
+func Sender(reps <-chan Command, cmds chan<- Command, wait_send *sync.WaitGroup, wait_exec *sync.WaitGroup) {
+	for repa := range reps {
+		Repeat([]Command{repa},cmds,wait_exec)
 		wait_send.Done()
 	}
 }
 
 // Repeterar en lista av kommandon r antal gånger - kan anropa sig själv
 // om det stöter på en ny repetition bland kommandona.
-func Repeat(list []Command,cmds chan<- Command, wg *sync.WaitGroup) {
+func Repeat(list []Command,cmds chan<- Command, wait_exec *sync.WaitGroup) {
 	for _,cmd := range list {
 		if cmd.name == "REP" {
 			reps,_ := strconv.Atoi(cmd.arg)
 			for i := 0; i < reps; i++ {
-				Repeat(cmd.list,cmds,wg)
+				Repeat(cmd.list,cmds,wait_exec)
 			}
 		} else {
-			wg.Add(1)
+			wait_exec.Add(1)
 			cmds <- cmd
 		}
 	}
@@ -346,92 +306,76 @@ func Repeat(list []Command,cmds chan<- Command, wg *sync.WaitGroup) {
 
 // Tråd för exekvering av kommandon, utför självaste sköldpaddekontrollen
 func Executor(commands <-chan Command, wg *sync.WaitGroup, output chan<- string) {
-	turtle := Turtle{}
-	turtle.col = "#0000FF"
+	var answer []string
+	var down bool
+	color := "#0000FF"
+	var rotation float64
+	var X float64
+	var Y float64
 	for command := range commands {
-		exemap[command.name](&turtle,command.arg)
+		switch command.name {
+		case "DOWN":
+			down = true
+		case "UP":
+			down = false
+		case "FORW":
+			X2,Y2 := Movement(rotation,command.arg)
+			if down {
+				X1 := X
+				Y1 := Y
+				X += X2
+				Y += Y2
+				AddToAnswer(color,X1,Y1,X,Y,&answer)
+			} else {
+				X += X2
+				Y += Y2
+			}
+		case "BACK":
+			X2,Y2 := Movement(rotation,command.arg)
+			if down {
+				X1 := X
+				Y1 := Y
+				X -= X2
+				Y -= Y2
+				AddToAnswer(color,X1,Y1,X,Y,&answer)
+			} else {
+				X -= X2
+				Y -= Y2
+			}
+		case "LEFT":
+			rotation += DegToRad(command.arg)
+		case "RIGHT":
+			rotation -= DegToRad(command.arg)
+		case "COLOR":
+			color = command.arg
+		}
 		wg.Done() 
 	}
-	output <- strings.Join(turtle.ans," ")
+	output <- strings.Join(answer," ")
 }
 
-var exemap = map[string]func(*Turtle,string){
-	"DOWN":ExecDown,
-	"UP":ExecUp,
-	"FORW":ExecForw,
-	"BACK":ExecBack,
-	"LEFT":ExecLeft,
-	"RIGHT":ExecRight,
-	"COLOR":ExecColor,
-}
-
-func ExecDown(turtle *Turtle, arg string) {
-	(*turtle).down = true
-}
-
-func ExecUp(turtle *Turtle, arg string) {
-	(*turtle).down = false
-}
-
-func ExecForw(turtle *Turtle, arg string) {
-	X2,Y2 := Movement(turtle,arg)
-	if (*turtle).down {
-		X1 := (*turtle).X
-		Y1 := (*turtle).Y
-		(*turtle).X += X2
-		(*turtle).Y += Y2
-		AddToAnswer(turtle, X1, Y1)
-	} else {
-		(*turtle).X += X2
-		(*turtle).Y += Y2
-	}
-}
-
-func ExecBack(turtle *Turtle, arg string) {
-	X2,Y2 := Movement(turtle,arg)
-	if (*turtle).down {
-		X1 := (*turtle).X
-		Y1 := (*turtle).Y
-		(*turtle).X -= X2
-		(*turtle).Y -= Y2
-		AddToAnswer(turtle, X1, Y1)
-	} else {
-		(*turtle).X -= X2
-		(*turtle).Y -= Y2
-	}
-}
-
-func ExecLeft(turtle *Turtle, arg string) {
-	(*turtle).rot += DegToRad(arg)
-}
-
-func ExecRight(turtle *Turtle, arg string) {
-	(*turtle).rot -= DegToRad(arg)
-}
-
-func ExecColor(turtle *Turtle, arg string) {
-	(*turtle).col = arg
-}
-
-func Movement(turtle *Turtle, arg string) (float64,float64) {
+// Ny position efter rörelse, fram eller bak
+func Movement(rotation float64, arg string) (float64,float64) {
 	n,_ := strconv.ParseFloat(arg, 64)
-	X := math.Cos((*turtle).rot)*n
-	Y := math.Sin((*turtle).rot)*n
+	X := math.Cos(rotation)*n
+	Y := math.Sin(rotation)*n
 	return X,Y
 }
 
-func AddToAnswer(turtle *Turtle, X1 float64, Y1 float64) {
+// Lägg till en linje till svarslistan
+func AddToAnswer(color string, X1 float64, Y1 float64, X2 float64, Y2 float64, answer *[]string) {
 	newans := []string{
-		(*turtle).col,
+		color,
 		strconv.FormatFloat(X1, 'f', 4, 64),
 		strconv.FormatFloat(Y1, 'f', 4, 64),
-		strconv.FormatFloat((*turtle).X, 'f', 4, 64),
-		strconv.FormatFloat((*turtle).Y, 'f', 4, 64),
+		strconv.FormatFloat(X2, 'f', 4, 64),
+		strconv.FormatFloat(Y2, 'f', 4, 64),
 		"\n",
 	}
-	(*turtle).ans = append((*turtle).ans, newans...)
+	*answer = append(*answer, newans...)
 }
 
+// Ändra från grader till radianer
 func DegToRad(arg string) float64 {
 	degs,_ := strconv.Atoi(arg)
 	return float64(degs)*math.Pi/180
