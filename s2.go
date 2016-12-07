@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"regexp"
 	"math"
+	"container/list"
 	"fmt"
 )
 
@@ -29,7 +30,7 @@ type Cit struct {}
 type Command struct {
 	name string
 	arg string
-	list []Command
+	list *list.List
 }
 
 // Mainfunktion, skapar kanaler, trådar och skriver ut slutresultat
@@ -232,12 +233,12 @@ func ParseWord(token Token, tokens <-chan Token, wait_toks *sync.WaitGroup, erow
 					wait_toks.Done()
 					nextoken := <-tokens
 					if _,b := nextoken.tok.(Word); b {
-						clist := []Command{}
+						clist := list.New()
 						var nextcmd Command
 						var prevrow int
 						for end := false; !end && nextoken.row != 0;{
 							nextcmd,prevrow = ParseWord(nextoken,tokens,wait_toks,erow)
-							clist = append(clist,nextcmd)
+							clist.PushBack(nextcmd)
 							wait_toks.Done()
 							nextoken = <-tokens
 							_,end = nextoken.tok.(Cit)
@@ -256,7 +257,9 @@ func ParseWord(token Token, tokens <-chan Token, wait_toks *sync.WaitGroup, erow
 					}
 				} else if _,b := citorcmd.tok.(Word); b {
 					repcommand,_ := ParseWord(citorcmd,tokens,wait_toks,erow)
-					return Command{word.val,num.val,[]Command{repcommand}},citorcmd.row
+					list := list.New()
+					list.PushFront(repcommand)
+					return Command{word.val,num.val,list},citorcmd.row
 				} else {
 					if citorcmd.row != 0 {
 						erow <- citorcmd.row
@@ -282,24 +285,28 @@ func ParseWord(token Token, tokens <-chan Token, wait_toks *sync.WaitGroup, erow
 
 // Tråd för att sända repetitioner (och vanliga kommandon) till Executor
 func Sender(reps <-chan Command, cmds chan<- Command, wait_send *sync.WaitGroup, wait_exec *sync.WaitGroup) {
-	for repa := range reps {
-		Repeat([]Command{repa},cmds,wait_exec)
+	for cmd := range reps {
+		list := list.New()
+		list.PushFront(cmd)
+		Repeat(list,cmds,wait_exec)
 		wait_send.Done()
 	}
 }
 
 // Repeterar en lista av kommandon r antal gånger - kan anropa sig själv
 // om det stöter på en ny repetition bland kommandona.
-func Repeat(list []Command,cmds chan<- Command, wait_exec *sync.WaitGroup) {
-	for _,cmd := range list {
-		if cmd.name == "REP" {
-			reps,_ := strconv.Atoi(cmd.arg)
-			for i := 0; i < reps; i++ {
-				Repeat(cmd.list,cmds,wait_exec)
+func Repeat(list *list.List,cmds chan<- Command, wait_exec *sync.WaitGroup) {
+	for elem := list.Front(); elem != nil; elem = elem.Next() {
+		if cmd,b := elem.Value.(Command); b {
+			if cmd.name == "REP" {
+				reps,_ := strconv.Atoi(cmd.arg)
+				for i := 0; i < reps; i++ {
+					Repeat(cmd.list,cmds,wait_exec)
+				}
+			} else {
+				wait_exec.Add(1)
+				cmds <- cmd
 			}
-		} else {
-			wait_exec.Add(1)
-			cmds <- cmd
 		}
 	}
 }
