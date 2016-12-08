@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"regexp"
 	"math"
-	"container/list"
 	"fmt"
 )
 
@@ -30,7 +29,8 @@ type Cit struct {}
 type Command struct {
 	name string
 	arg string
-	list *list.List
+	rep *Command
+	next *Command
 }
 
 // Mainfunktion, skapar kanaler, trådar och skriver ut slutresultat
@@ -158,16 +158,16 @@ func Analyser(input <-chan string, tokens chan<- Token, wait_rows *sync.WaitGrou
 // korrekta kommandon.
 func Parser(tokens <-chan Token, reps chan<- Command, wait_toks *sync.WaitGroup, wait_send *sync.WaitGroup, erow chan<- int) {
 	for token := range tokens {
-		message,_ := ParseWord(token,tokens,wait_toks,erow)
+		cmd,_ := ParseCmd(token,tokens,wait_toks,erow)
 		wait_send.Add(1)
 		wait_toks.Done()
-		reps <- message
+		reps <- cmd
 	}
 	erow <- 0
 }
 
 // Rekursiv metod för Parser
-func ParseWord(token Token, tokens <-chan Token, wait_toks *sync.WaitGroup, erow chan<- int) (Command,int) {
+func ParseCmd(token Token, tokens <-chan Token, wait_toks *sync.WaitGroup, erow chan<- int) (Command,int) {
 	if word,b := token.tok.(Word); b {
 		wait_toks.Done()
 		switch word := word.word.(type) {
@@ -177,7 +177,7 @@ func ParseWord(token Token, tokens <-chan Token, wait_toks *sync.WaitGroup, erow
 				wait_toks.Done()			
 				dot := <-tokens
 				if _,b := dot.tok.(Dot); b {
-					return Command{name:word.val,arg:num.val},dot.row
+					return Command{name:word.val,arg:num.val,next:&(Command{})},dot.row
 				} else {
 					if dot.row != 0 {
 						erow <- dot.row
@@ -198,7 +198,7 @@ func ParseWord(token Token, tokens <-chan Token, wait_toks *sync.WaitGroup, erow
 				wait_toks.Done()
 				dot := <-tokens
 				if _,b := dot.tok.(Dot); b {
-					return Command{name:word.val,arg:col.val},dot.row
+					return Command{name:word.val,arg:col.val,next:&(Command{})},dot.row
 				} else {
 					if dot.row != 0 {
 						erow <- dot.row
@@ -216,7 +216,7 @@ func ParseWord(token Token, tokens <-chan Token, wait_toks *sync.WaitGroup, erow
 		case DotWord:
 			dot := <-tokens
 			if _,b := dot.tok.(Dot); b {
-				return Command{name:word.val},dot.row
+				return Command{name:word.val,next:&(Command{})},dot.row
 			} else {
 				if dot.row != 0 {
 					erow <- dot.row
@@ -228,45 +228,8 @@ func ParseWord(token Token, tokens <-chan Token, wait_toks *sync.WaitGroup, erow
 			number := <-tokens
 			if num,b := number.tok.(Int); b {
 				wait_toks.Done()
-				citorcmd := <-tokens
-				if _,b := citorcmd.tok.(Cit); b {
-					wait_toks.Done()
-					nextoken := <-tokens
-					if _,b := nextoken.tok.(Word); b {
-						clist := list.New()
-						var nextcmd Command
-						var prevrow int
-						for end := false; !end && nextoken.row != 0;{
-							nextcmd,prevrow = ParseWord(nextoken,tokens,wait_toks,erow)
-							clist.PushBack(nextcmd)
-							wait_toks.Done()
-							nextoken = <-tokens
-							_,end = nextoken.tok.(Cit)
-						}
-						if nextoken.row != 0 {
-							return Command{word.val,num.val,clist},nextoken.row
-						} else {
-							erow <- prevrow
-						}
-					} else {
-						if nextoken.row != 0 {
-							erow <- nextoken.row
-						} else {
-							erow <- citorcmd.row
-						}
-					}
-				} else if _,b := citorcmd.tok.(Word); b {
-					repcommand,_ := ParseWord(citorcmd,tokens,wait_toks,erow)
-					list := list.New()
-					list.PushFront(repcommand)
-					return Command{word.val,num.val,list},citorcmd.row
-				} else {
-					if citorcmd.row != 0 {
-						erow <- citorcmd.row
-					} else {
-						erow <- number.row
-					}
-				}
+				rep,end := ParseRep(number.row,tokens,wait_toks,erow)
+				return Command{word.val,num.val,rep,&(Command{})},end
 			} else {
 				if number.row != 0 {
 					erow <- number.row
@@ -283,30 +246,72 @@ func ParseWord(token Token, tokens <-chan Token, wait_toks *sync.WaitGroup, erow
 	return Command{},0
 }
 
+func ParseRep(prev int, tokens <-chan Token, wait_toks *sync.WaitGroup, erow chan<- int) (*Command,int) {
+	citorcmd := <-tokens
+	if _,b := citorcmd.tok.(Cit); b {
+		wait_toks.Done()
+		nextoken := <-tokens
+		if _,b := nextoken.tok.(Word); b {
+			rep,end,last := ParseExp(nextoken,tokens,wait_toks,erow)
+			if _,b := end.tok.(Cit); b {
+				return &rep,end.row
+			} else {
+				if end.row != 0 {
+					erow <- end.row
+				} else {
+					erow <- last
+				}
+			}
+		} else {
+			erow <- nextoken.row
+		}
+	} else if _,b := citorcmd.tok.(Word); b {
+		repcommand,end := ParseCmd(citorcmd,tokens,wait_toks,erow)
+		return &repcommand,end
+	} else {
+		if citorcmd.row != 0 {
+			erow <- citorcmd.row
+		} else {
+			erow <- prev
+		}
+	}
+	dummy := make(chan struct{})
+	<-dummy
+	return &(Command{}),0
+}
+
+func ParseExp(word Token, tokens <-chan Token, wait_toks *sync.WaitGroup, erow chan<- int) (Command,Token,int) {
+	cmd,last := ParseCmd(word,tokens,wait_toks,erow)
+	wait_toks.Done()
+	nextword := <-tokens
+	if _,b := nextword.tok.(Word); b {
+		next,end,last := ParseExp(nextword,tokens,wait_toks,erow)
+		cmd.next = &next
+		return cmd,end,last
+	}
+	return cmd,nextword,last
+}
+
 // Tråd för att sända repetitioner (och vanliga kommandon) till Executor
 func Sender(reps <-chan Command, cmds chan<- Command, wait_send *sync.WaitGroup, wait_exec *sync.WaitGroup) {
 	for cmd := range reps {
-		list := list.New()
-		list.PushFront(cmd)
-		Repeat(list,cmds,wait_exec)
+		Repeat(cmd,cmds,wait_exec)
 		wait_send.Done()
 	}
 }
 
 // Repeterar en lista av kommandon r antal gånger - kan anropa sig själv
 // om det stöter på en ny repetition bland kommandona.
-func Repeat(list *list.List,cmds chan<- Command, wait_exec *sync.WaitGroup) {
-	for elem := list.Front(); elem != nil; elem = elem.Next() {
-		if cmd,b := elem.Value.(Command); b {
-			if cmd.name == "REP" {
-				reps,_ := strconv.Atoi(cmd.arg)
-				for i := 0; i < reps; i++ {
-					Repeat(cmd.list,cmds,wait_exec)
-				}
-			} else {
-				wait_exec.Add(1)
-				cmds <- cmd
+func Repeat(cmd Command, cmds chan<- Command, wait_exec *sync.WaitGroup) {
+	for ; cmd != (Command{}); cmd = *(cmd.next) {
+		if cmd.name == "REP" {
+			reps,_ := strconv.Atoi(cmd.arg)
+			for i := 0; i < reps; i++ {
+				Repeat(*(cmd.rep),cmds,wait_exec)
 			}
+		} else {
+			wait_exec.Add(1)
+			cmds <- cmd
 		}
 	}
 }
