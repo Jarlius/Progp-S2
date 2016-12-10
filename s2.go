@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"os"
 	"sync"
+	"unicode"
 	"strings"
 	"strconv"
 	"regexp"
@@ -86,66 +87,57 @@ func main() {
 // dess beståndsdelar som tokens. Om tecken inte skapar ett token skickas 
 // felmeddelande till mainfuntion.
 func Analyser(input <-chan string, tokens chan<- Token, wait_rows *sync.WaitGroup, wait_toks *sync.WaitGroup, erow chan<- int) {
-	spacgex,_ := regexp.Compile(`^\s*([^\s]+[\s\.\%]|[\."])$`) 
-	iwordex,_ := regexp.Compile(`^(FORW|BACK|LEFT|RIGHT)$`)
-	cwordex,_ := regexp.Compile(`^COLOR$`)
-	dwordex,_ := regexp.Compile(`^(DOWN|UP)$`)
-	rwordex,_ := regexp.Compile(`^REP$`)
+	stopgex,_ := regexp.Compile(`^[\s\.%"]$`) 
 	colorex,_ := regexp.Compile(`^\#[A-Z\d]{6}$`)
 	integex,_ := regexp.Compile(`^[1-9]\d*$`)
-	nullgex,_ := regexp.Compile(`^\s*\%$`)
 	row := 1
-	for s := range input {
-		words := strings.ToUpper(s + " ")
-		word := " "
-		for _,r := range words {
-			word += string(r)
-			comment := false
-			if spacgex.MatchString(word) {
-				dot := ""
-				if last := string(r); last == "." || last == `"` || last == "%" {
-					dot = last
-					word = strings.TrimSuffix(word,last)
+	for words := range input {
+		words = words + " "
+		word := []byte{}
+		for _,runa := range words {
+			if len(word) == 0 && unicode.IsSpace(runa) {continue}
+			if !stopgex.MatchString(string(runa)) {
+				if unicode.IsLower(runa) {
+					runa = unicode.ToUpper(runa)
 				}
-				trim := strings.TrimSpace(word)
-				switch {
-				case iwordex.MatchString(trim):
-					wait_toks.Add(1)
-					tokens <- Token{row,Word{IntWord{trim}}}
-				case cwordex.MatchString(trim):
-					wait_toks.Add(1)
-					tokens <- Token{row,Word{ColWord{trim}}}
-				case dwordex.MatchString(trim):
-					wait_toks.Add(1)
-					tokens <- Token{row,Word{DotWord{trim}}}
-				case rwordex.MatchString(trim):
-					wait_toks.Add(1)
-					tokens <- Token{row,Word{RepWord{trim}}}
-				case integex.MatchString(trim):
-					wait_toks.Add(1)
-					tokens <- Token{row,Int{trim}}
-				case colorex.MatchString(trim):
-					wait_toks.Add(1)
-					tokens <- Token{row,Color{trim}}
-				case trim == "":
+				word = append(word,byte(runa))
+			} else {
+				var token Token
+				switch ord := string(word); {
+				case ord == "FORW" || ord == "BACK" || ord == "LEFT" || ord == "RIGHT":
+					token = Token{row,Word{IntWord{ord}}}
+				case ord == "COLOR":
+					token = Token{row,Word{ColWord{ord}}}
+				case ord == "DOWN" || ord == "UP":
+					token = Token{row,Word{DotWord{ord}}}
+				case ord == "REP":
+					token = Token{row,Word{RepWord{ord}}}
+				case integex.Match(word):
+					token = Token{row,Int{ord}}
+				case colorex.Match(word):
+					token = Token{row,Color{ord}}
+				case len(word) == 0:
 				default:
 					erow <- row
 				}
-				if dot == "." {
+				if token != (Token{}) {
+					wait_toks.Add(1)
+					tokens <- token
+				}
+				if runa == '.' {
 					wait_toks.Add(1)
 					tokens <- Token{row,Dot{}}
-				} else if dot == `"` {
-					wait_toks.Add(1)
-					tokens <- Token{row,Cit{}}
-				} else if dot == "%" {
-					comment = true
+				} else if runa == '"' {
+					if len(word) == 0 {
+						wait_toks.Add(1)
+						tokens <- Token{row,Cit{}}
+					} else {
+						erow <- row
+					}
+				} else if runa == '%' {
+					break;
 				}
-				word = ""
-			} else if nullgex.MatchString(word) {
-				break
-			}
-			if comment {
-				break
+				word = []byte{}
 			}
 		}
 		row++
@@ -158,138 +150,110 @@ func Analyser(input <-chan string, tokens chan<- Token, wait_rows *sync.WaitGrou
 // korrekta kommandon.
 func Parser(tokens <-chan Token, reps chan<- Command, wait_toks *sync.WaitGroup, wait_send *sync.WaitGroup, erow chan<- int) {
 	for token := range tokens {
-		cmd,_ := ParseCmd(token,tokens,wait_toks,erow)
-		wait_send.Add(1)
-		wait_toks.Done()
-		reps <- cmd
+		cmd,row := ParseCmd(token,tokens,wait_toks)
+		if cmd != (Command{}) {
+			wait_send.Add(1)
+			wait_toks.Done()
+			reps <- cmd
+		} else {
+			erow <- row
+		}
 	}
 	erow <- 0
 }
 
-// Rekursiv metod för Parser
-func ParseCmd(token Token, tokens <-chan Token, wait_toks *sync.WaitGroup, erow chan<- int) (Command,int) {
+// Kontrollerar att ett kommando är semantiskt korrekt. Tar emot första token
+// som man kan vilja peek-a på i anroparen, men hämtar resten av tokens från kanal
+// Returnerar kommando och radnummer. Är kommandot tomt används rad till errormeddelande
+func ParseCmd(token Token, tokens <-chan Token, wait_toks *sync.WaitGroup) (Command,int) {
+	var prev int
 	if word,b := token.tok.(Word); b {
 		wait_toks.Done()
+		prev = token.row
 		switch word := word.word.(type) {
 		case IntWord:
-			number := <-tokens
-			if num,b := number.tok.(Int); b {
+			token = <-tokens
+			if num,b := token.tok.(Int); b {
 				wait_toks.Done()			
-				dot := <-tokens
-				if _,b := dot.tok.(Dot); b {
-					return Command{name:word.val,arg:num.val,next:&(Command{})},dot.row
-				} else {
-					if dot.row != 0 {
-						erow <- dot.row
-					} else {
-						erow <- number.row
-					}
-				}
-			} else {
-				if number.row != 0 {
-					erow <- number.row
-				} else {
-					erow <- token.row
+				prev = token.row
+				token = <-tokens
+				if _,b := token.tok.(Dot); b {
+					return Command{name:word.val,arg:num.val,next:&(Command{})},token.row
 				}
 			}
 		case ColWord:
-			color := <-tokens
-			if col,b := color.tok.(Color); b {
+			token = <-tokens
+			if col,b := token.tok.(Color); b {
 				wait_toks.Done()
-				dot := <-tokens
-				if _,b := dot.tok.(Dot); b {
-					return Command{name:word.val,arg:col.val,next:&(Command{})},dot.row
-				} else {
-					if dot.row != 0 {
-						erow <- dot.row
-					} else {
-						erow <- color.row
-					}
-				}
-			} else {
-				if color.row != 0 {
-					erow <- color.row
-				} else {
-					erow <- token.row
+				prev = token.row
+				token = <-tokens
+				if _,b := token.tok.(Dot); b {
+					return Command{name:word.val,arg:col.val,next:&(Command{})},token.row
 				}
 			}
 		case DotWord:
-			dot := <-tokens
-			if _,b := dot.tok.(Dot); b {
-				return Command{name:word.val,next:&(Command{})},dot.row
-			} else {
-				if dot.row != 0 {
-					erow <- dot.row
-				} else {
-					erow <- token.row
-				}
-			}			
+			token = <-tokens
+			if _,b := token.tok.(Dot); b {
+				return Command{name:word.val,next:&(Command{})},token.row
+			}
 		case RepWord:
-			number := <-tokens
-			if num,b := number.tok.(Int); b {
+			token = <-tokens
+			if num,b := token.tok.(Int); b {
 				wait_toks.Done()
-				rep,end := ParseRep(number.row,tokens,wait_toks,erow)
-				return Command{word.val,num.val,rep,&(Command{})},end
-			} else {
-				if number.row != 0 {
-					erow <- number.row
+				rep,end := ParseRep(token.row,tokens,wait_toks)
+				if *rep != (Command{}) {
+					return Command{word.val,num.val,rep,&(Command{})},end
 				} else {
-					erow <- token.row
+					return *rep,end
 				}
 			}
 		}
-	} else {
-		erow <- token.row
 	}
-	dummy := make(chan struct{})
-	<-dummy
-	return Command{},0
+	if token.row != 0 {
+		return (Command{}),token.row
+	} else {
+		return (Command{}),prev
+	}
 }
 
-func ParseRep(prev int, tokens <-chan Token, wait_toks *sync.WaitGroup, erow chan<- int) (*Command,int) {
-	citorcmd := <-tokens
-	if _,b := citorcmd.tok.(Cit); b {
+// Kontrollerar att en repetition är semantiskt korrekt. Tar emot radnummret på anroparens token och
+// returnerar pekare för repetitionskommandot att repetera. Tom pekare betyder error på returrad.
+func ParseRep(prev int, tokens <-chan Token, wait_toks *sync.WaitGroup) (*Command,int) {
+	token := <-tokens
+	if _,b := token.tok.(Cit); b {
 		wait_toks.Done()
-		nextoken := <-tokens
-		if _,b := nextoken.tok.(Word); b {
-			rep,end,last := ParseExp(nextoken,tokens,wait_toks,erow)
-			if _,b := end.tok.(Cit); b {
-				return &rep,end.row
-			} else {
-				if end.row != 0 {
-					erow <- end.row
-				} else {
-					erow <- last
-				}
+		prev = token.row
+		token = <-tokens
+		if _,b := token.tok.(Word); b {
+			var rep Command
+			rep,token,prev = ParseExp(token,tokens,wait_toks)
+			if _,b := token.tok.(Cit); b {
+				return &rep,token.row
 			}
-		} else {
-			erow <- nextoken.row
 		}
-	} else if _,b := citorcmd.tok.(Word); b {
-		repcommand,end := ParseCmd(citorcmd,tokens,wait_toks,erow)
-		return &repcommand,end
-	} else {
-		if citorcmd.row != 0 {
-			erow <- citorcmd.row
-		} else {
-			erow <- prev
-		}
+	} else if _,b := token.tok.(Word); b {
+		cmd,end := ParseCmd(token,tokens,wait_toks)
+		return &cmd,end
 	}
-	dummy := make(chan struct{})
-	<-dummy
-	return &(Command{}),0
+	if token.row != 0 {
+		return &(Command{}),token.row
+	} else {
+		return &(Command{}),prev
+	}
 }
 
-func ParseExp(word Token, tokens <-chan Token, wait_toks *sync.WaitGroup, erow chan<- int) (Command,Token,int) {
-	cmd,last := ParseCmd(word,tokens,wait_toks,erow)
+// Skapar en uttryck av kommandon. Tar emot Token som garanterat är ett ord, och returnerar första 
+// kommandot i kedjan tillsammans med det token som avbröt kedjan och radnummret på sista kommandot
+func ParseExp(word Token, tokens <-chan Token, wait_toks *sync.WaitGroup) (Command,Token,int) {
+	cmd,prev := ParseCmd(word,tokens,wait_toks)
 	wait_toks.Done()
 	nextword := <-tokens
 	if _,b := nextword.tok.(Word); b {
-		next,end,last := ParseExp(nextword,tokens,wait_toks,erow)
+		next,token,prev := ParseExp(nextword,tokens,wait_toks)
 		cmd.next = &next
-		return cmd,end,last
+		return cmd,token,prev
 	}
-	return cmd,nextword,last
+	return cmd,nextword,prev
 }
 
 // Tråd för att sända repetitioner (och vanliga kommandon) till Executor
